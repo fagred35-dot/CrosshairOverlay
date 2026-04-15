@@ -7,3 +7,7 @@ publish*/
 *.dll
 *.pdb
 .vs/
+*.bak
+backup/
+*.md
+!README.md
