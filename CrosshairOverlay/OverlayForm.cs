@@ -892,7 +892,25 @@ namespace CrosshairOverlay
                     break;
                 case CrosshairStyle.CustomImage:
                     if (_customImageCache != null)
-                        g.DrawImage(_customImageCache, cx - _customImageCache.Width / 2, cy - _customImageCache.Height / 2);
+                    {
+                        float imgScale = _size / (float)Math.Max(_customImageCache.Width, _customImageCache.Height) * 2f;
+                        int dw = (int)(_customImageCache.Width * imgScale);
+                        int dh = (int)(_customImageCache.Height * imgScale);
+                        var destRect = new Rectangle(cx - dw / 2, cy - dh / 2, dw, dh);
+                        float a = alpha / 255f;
+                        var cm = new System.Drawing.Imaging.ColorMatrix(new float[][]
+                        {
+                            new float[] {1,0,0,0,0},
+                            new float[] {0,1,0,0,0},
+                            new float[] {0,0,1,0,0},
+                            new float[] {0,0,0,a,0},
+                            new float[] {0,0,0,0,1}
+                        });
+                        using var ia = new System.Drawing.Imaging.ImageAttributes();
+                        ia.SetColorMatrix(cm);
+                        g.DrawImage(_customImageCache, destRect, 0, 0,
+                            _customImageCache.Width, _customImageCache.Height, GraphicsUnit.Pixel, ia);
+                    }
                     break;
             }
         }
