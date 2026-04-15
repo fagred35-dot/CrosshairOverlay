@@ -111,7 +111,7 @@ namespace CrosshairOverlay
 
         // Auto-update: change these to your GitHub repo
         internal const string APP_VERSION = "1.0.0";
-        private const string GITHUB_REPO = "OWNER/CrosshairOverlay"; // TODO: set your GitHub owner/repo
+        private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
         internal CrosshairStyle _style = CrosshairStyle.Cross;
