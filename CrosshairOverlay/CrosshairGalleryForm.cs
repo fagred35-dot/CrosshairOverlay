@@ -72,6 +72,7 @@ namespace CrosshairOverlay
             DoubleBuffered = true;
             BackColor = Color.FromArgb(12, 6, 24);
             ShowInTaskbar = false;
+            TopMost = true;
 
             MouseWheel += (s, e) =>
             {
