@@ -49,6 +49,12 @@ namespace CrosshairOverlay
         internal static string ChooseImageTooltip => Get("Выбрать PNG/JPG картинку для прицела", "Choose PNG/JPG image for crosshair");
         internal static string ManualRotation => Get("Поворот (°)", "Rotation (°)");
         internal static string ManualRotationTooltip => Get("Ручной угол поворота прицела (0-360)", "Manual crosshair rotation angle (0-360)");
+        internal static string OpenGallery => Get("Галерея прицелов", "Crosshair Gallery");
+        internal static string OpenGalleryTooltip => Get("Открыть галерею всех стилей прицелов", "Open gallery of all crosshair styles");
+        internal static string CrosshairGalleryTitle => Get("ГАЛЕРЕЯ ПРИЦЕЛОВ", "CROSSHAIR GALLERY");
+        internal static string GalleryStandard => Get("Стандарт", "Standard");
+        internal static string GalleryCommunity => Get("Сообщество", "Community");
+        internal static string GalleryAdd => Get("Добавить", "Add");
 
         // ── AUTOCLICKER ──
         internal static string SectionAutoclicker => Get("──  АВТОКЛИКЕР  ──", "──  AUTOCLICKER  ──");

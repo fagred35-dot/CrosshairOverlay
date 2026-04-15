@@ -38,6 +38,7 @@ namespace CrosshairOverlay
 
         private static Color Accent = Color.FromArgb(130, 80, 220);
         private static Color AccentGlow = Color.FromArgb(175, 130, 255);
+        internal static Color GetAccent() => Accent;
         private static Color TextMain = Color.FromArgb(235, 228, 245);
         private static Color TextDim = Color.FromArgb(130, 120, 155);
         private static Color TextMuted = Color.FromArgb(90, 85, 110);
@@ -249,6 +250,12 @@ namespace CrosshairOverlay
                 c => _overlay._crossColor2 = c,
                 Lang.SecondColorTooltip);
             AddStyle();
+            AddButton(Lang.OpenGallery, () =>
+            {
+                using var gallery = new CrosshairGalleryForm(_overlay);
+                gallery.ShowDialog(this);
+                BuildItems(); ComputeLayout(); Invalidate();
+            }, Lang.OpenGalleryTooltip);
             AddSpacer();
 
             // ── AUTOCLICKER ──
