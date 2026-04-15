@@ -259,7 +259,7 @@ namespace CrosshairOverlay
             AddToggle(Lang.HoldMode, _overlay._clickOnHold,
                 v => { _overlay._clickOnHold = v; },
                 Lang.HoldModeTooltip);
-            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 5, 500, 5,
+            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 5, 1000, 5,
                 v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); },
                 Lang.ClicksPerSecTooltip);
             AddToggle(Lang.RightClick, _overlay._rightClickMode,
@@ -271,15 +271,7 @@ namespace CrosshairOverlay
             AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5,
                 v => _overlay._randomDelayPercent = v,
                 Lang.SpreadPercentTooltip);
-            AddToggle(Lang.UseSendInput, _overlay._useSendInput,
-                v => { _overlay._useSendInput = v; _overlay.SaveSettings(); },
-                Lang.UseSendInputTooltip);
-            AddToggle(Lang.Multithreading, _overlay._useMultithreading,
-                v => { _overlay._useMultithreading = v; _overlay.SaveSettings(); },
-                Lang.MultithreadingTooltip);
-            AddToggle(Lang.HighPrecision, _overlay._useHighPrecision,
-                v => { _overlay._useHighPrecision = v; _overlay.SaveSettings(); },
-                Lang.HighPrecisionTooltip);
+
             AddInfo(Lang.ClickCounter,
                 _overlay._clickCounter.ToString("N0"),
                 AccentGlow,
@@ -431,9 +423,39 @@ namespace CrosshairOverlay
                 Type = UiType.StyleSelector, Label = Lang.CrosshairStyle,
                 Tooltip = Lang.CrosshairStyleTooltip, Height = 68,
                 SelectedStyle = (int)_overlay._style,
-                StyleNames = new[] { "\u271a", "\u25cb", "\u25cf", "\u2295", "\u2039", "T", "\u25c7", "\u25b2", "+" },
-                OnStyleChanged = v => _overlay._style = (OverlayForm.CrosshairStyle)v
+                StyleNames = new[] { "✚", "○", "●", "⊕", "‹", "T", "◇", "▲", "+", "✕", "▽", "⊹", "[ ]", "∨", "🖼" },
+                OnStyleChanged = v =>
+                {
+                    _overlay._style = (OverlayForm.CrosshairStyle)v;
+                    _overlay.SaveSettings();
+                    BuildItems(); ComputeLayout(); Invalidate();
+                }
             });
+
+            // Custom image controls (only visible when CustomImage style is selected)
+            if (_overlay._style == OverlayForm.CrosshairStyle.CustomImage)
+            {
+                AddButton(Lang.ChooseImage, () =>
+                {
+                    using var ofd = new OpenFileDialog
+                    {
+                        Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
+                        Title = Lang.ChooseImage
+                    };
+                    if (ofd.ShowDialog() == DialogResult.OK)
+                    {
+                        _overlay._customImagePath = ofd.FileName;
+                        _overlay._customImageCache?.Dispose();
+                        _overlay._customImageCache = new Bitmap(ofd.FileName);
+                        _overlay.SaveSettings();
+                    }
+                }, Lang.ChooseImageTooltip);
+            }
+
+            // Manual rotation slider (for all styles)
+            AddSlider(Lang.ManualRotation, (int)_overlay._rotation, 0, 360, 1,
+                v => _overlay._rotation = v,
+                Lang.ManualRotationTooltip);
         }
 
         private void AddButton(string label, Action onClick, string tooltip)
@@ -884,7 +906,7 @@ namespace CrosshairOverlay
                 using var textBrush = new SolidBrush(TextMain);
                 g.DrawString(item.Label, _fontControl, textBrush, x + 10, y + 4);
 
-                int btnW = 28, btnH = 26, btnY = y + 26, gap = 4, startX = x + 10;
+                int btnW = 20, btnH = 22, btnY = y + 26, gap = 2, startX = x + 6;
 
                 for (int si = 0; si < item.StyleNames.Length; si++)
                 {
@@ -1140,8 +1162,8 @@ namespace CrosshairOverlay
                         }
                         else
                         {
-                            btnW = 28; gap = 4; startX = ItemPadX + 10;
-                            btnH = 26; btnY = item.Y + 26;
+                            btnW = 20; gap = 2; startX = ItemPadX + 6;
+                            btnH = 22; btnY = item.Y + 26;
                         }
 
                         if (clickY >= btnY && clickY <= btnY + btnH)

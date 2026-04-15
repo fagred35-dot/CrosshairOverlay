@@ -105,7 +105,9 @@ namespace CrosshairOverlay
         #region Enums
         public enum CrosshairStyle
         {
-            Cross, Circle, Dot, CrossWithCircle, Chevron, TShape, Diamond, Arrow, Plus, CustomImage
+            Cross, Circle, Dot, CrossWithCircle, Chevron, TShape, Diamond, Arrow, Plus,
+            XShape, TriangleDown, Crosshairs, SquareBrackets, Wings,
+            CustomImage
         }
         #endregion
 
@@ -154,7 +156,8 @@ namespace CrosshairOverlay
         internal bool _clickOnHold = true;  // true = click while LMB held, false = toggle mode
         internal volatile int _clicksPerSecond = 30;
         internal volatile bool _clickerRunning = false;
-        private Thread? _clickThread;
+        private readonly List<Thread> _clickThreads = new();
+        private volatile int _threadCount = 1;
         private readonly object _clickLock = new();
         #endregion
 
@@ -171,9 +174,6 @@ namespace CrosshairOverlay
         internal bool _randomDelay = false;
         internal int _randomDelayPercent = 20;
         internal long _clickCounter = 0;
-        internal bool _useSendInput = true;       // SendInput API vs mouse_event
-        internal bool _useMultithreading = true;   // Отдельный поток для кликов
-        internal bool _useHighPrecision = true;    // Высокоточный таймер (QueryPerformanceCounter)
         #endregion
 
         #region Visual Effects
@@ -232,6 +232,7 @@ namespace CrosshairOverlay
             _hkMods[HK_RECORD] = CS;       _hkKeys[HK_RECORD] = 0x78;       // F9
             _hkMods[HK_REPLAY_SAVE] = CS;  _hkKeys[HK_REPLAY_SAVE] = 0x79;  // F10
             _hkMods[HK_GALLERY] = CS;      _hkKeys[HK_GALLERY] = 0x47;      // G
+            _hkMods[HK_EMERGENCY_STOP] = 0; _hkKeys[HK_EMERGENCY_STOP] = 0x1B; // Escape
         }
 
         internal void ReRegisterHotkeys()
@@ -296,7 +297,8 @@ namespace CrosshairOverlay
         private const int HK_RECORD = 12;
         private const int HK_REPLAY_SAVE = 13;
         private const int HK_GALLERY = 14;
-        private const int HOTKEY_COUNT = 14;
+        private const int HK_EMERGENCY_STOP = 15;
+        private const int HOTKEY_COUNT = 15;
         private const int MOD_NOREPEAT = 0x4000; // Prevent key repeat
         #endregion
 
@@ -401,8 +403,9 @@ namespace CrosshairOverlay
                         break;
                     case HK_STYLE:
                         int next = ((int)_style + 1);
-                        if (next >= 10 && _customImageCache == null) next = 0;
-                        _style = (CrosshairStyle)(next % 10);
+                        int styleCount = Enum.GetValues(typeof(CrosshairStyle)).Length;
+                        if (next >= styleCount - 1 && _customImageCache == null) next = 0;
+                        _style = (CrosshairStyle)(next % styleCount);
                         _needsStaticRender = true;
                         break;
                     case HK_SIZE_UP:
@@ -445,6 +448,16 @@ namespace CrosshairOverlay
                     case HK_SETTINGS:
                         OpenSettings();
                         break;
+                    case HK_EMERGENCY_STOP:
+                        if (_clickerRunning)
+                        {
+                            _autoClickerEnabled = false;
+                            StopClicker();
+                            SaveSettings();
+                            if (_settingsForm != null && !_settingsForm.IsDisposed)
+                                _settingsForm.UpdateClickerStatus();
+                        }
+                        break;
                 }
             }
             else if (m.Msg == 0x007E)
@@ -469,7 +482,6 @@ namespace CrosshairOverlay
             _dynamicCrosshair = false; _dynamicSpread = 0f;
             _glowEnabled = false; _hitMarkerEnabled = false;
             _rightClickMode = false; _randomDelay = false;
-            _useSendInput = true; _useMultithreading = true; _useHighPrecision = true;
             _needsStaticRender = true;
         }
 
@@ -526,93 +538,31 @@ namespace CrosshairOverlay
             {
                 if (_clickerRunning) return;
                 _clickerRunning = true;
+                timeBeginPeriod(1);
 
-                if (_useHighPrecision)
-                    timeBeginPeriod(1);
+                int cps = _clicksPerSecond;
+                // Each thread can do ~60-100 CPS with Thread.Sleep(1)
+                int threadCount = Math.Clamp((int)Math.Ceiling(cps / 60.0), 1, 16);
+                _threadCount = threadCount;
 
-                if (_useMultithreading)
+                _clickThreads.Clear();
+                for (int i = 0; i < threadCount; i++)
                 {
-                    _clickThread = new Thread(ClickLoop)
+                    var t = new Thread(ClickLoop)
                     {
                         IsBackground = true,
                         Priority = ThreadPriority.Highest
                     };
-                    _clickThread.Start();
+                    _clickThreads.Add(t);
+                    t.Start();
+                    Thread.Sleep(1);
                 }
-                else
-                {
-                    // Non-threaded: use a WinForms timer (runs on UI thread)
-                    _clickTimer ??= new System.Windows.Forms.Timer();
-                    _clickTimer.Interval = Math.Max(1, 1000 / Math.Max(1, _clicksPerSecond));
-                    _clickTimer.Tick -= ClickTimerTick;
-                    _clickTimer.Tick += ClickTimerTick;
-                    _clickTimer.Start();
-                }
-            }
-        }
-
-        private System.Windows.Forms.Timer? _clickTimer;
-
-        private void ClickTimerTick(object? sender, EventArgs e)
-        {
-            if (!_clickerRunning) { _clickTimer?.Stop(); return; }
-            if (_clickOnHold && !_physicalLmbDown) return;
-
-            uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
-            uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
-
-            if (_useSendInput)
-            {
-                int inputSize = Marshal.SizeOf(typeof(INPUT));
-                var inputs = new INPUT[2];
-                inputs[0].type = INPUT_MOUSE;
-                inputs[0].mi.dwFlags = downFlag;
-                inputs[0].mi.dwExtraInfo = SYNTHETIC_EXTRA_INFO;
-                inputs[1].type = INPUT_MOUSE;
-                inputs[1].mi.dwFlags = upFlag;
-                inputs[1].mi.dwExtraInfo = SYNTHETIC_EXTRA_INFO;
-                SendInput(2, inputs, inputSize);
-            }
-            else
-            {
-                mouse_event(downFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-                mouse_event(upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-            }
-
-            Interlocked.Add(ref _clickCounter, 1);
-            if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
-
-            // Update timer interval
-            if (_clickTimer != null)
-                _clickTimer.Interval = Math.Max(1, 1000 / Math.Max(1, _clicksPerSecond));
-        }
-
-        private void StopClicker()
-        {
-            lock (_clickLock)
-            {
-                _clickerRunning = false;
-
-                if (_clickThread != null)
-                {
-                    _clickThread.Join(500);
-                    _clickThread = null;
-                }
-
-                if (_clickTimer != null)
-                {
-                    _clickTimer.Stop();
-                    _clickTimer.Tick -= ClickTimerTick;
-                }
-
-                timeEndPeriod(1);
             }
         }
 
         private void ClickLoop()
         {
             var sw = new Stopwatch();
-            int inputSize = Marshal.SizeOf(typeof(INPUT));
 
             while (_clickerRunning)
             {
@@ -623,81 +573,53 @@ namespace CrosshairOverlay
                 }
 
                 int cps = _clicksPerSecond;
-
-                // Batch method: send multiple clicks per call for higher CPS
-                int batchSize = Math.Max(1, cps / 50);
-                batchSize = Math.Min(batchSize, 20);
+                int threads = _threadCount;
+                int myCps = Math.Max(1, cps / threads);
 
                 uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
                 uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
 
                 sw.Restart();
 
-                if (_useSendInput)
-                {
-                    // SendInput API — driver-level, faster and more reliable
-                    var inputs = new INPUT[batchSize * 2];
-                    for (int i = 0; i < batchSize; i++)
-                    {
-                        inputs[i * 2].type = INPUT_MOUSE;
-                        inputs[i * 2].mi.dwFlags = downFlag;
-                        inputs[i * 2].mi.dwExtraInfo = SYNTHETIC_EXTRA_INFO;
-                        inputs[i * 2 + 1].type = INPUT_MOUSE;
-                        inputs[i * 2 + 1].mi.dwFlags = upFlag;
-                        inputs[i * 2 + 1].mi.dwExtraInfo = SYNTHETIC_EXTRA_INFO;
-                    }
-                    SendInput((uint)(batchSize * 2), inputs, inputSize);
-                }
-                else
-                {
-                    // mouse_event — legacy, broader compatibility
-                    for (int i = 0; i < batchSize; i++)
-                    {
-                        mouse_event(downFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-                        mouse_event(upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-                    }
-                }
+                mouse_event(downFlag | upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
 
-                Interlocked.Add(ref _clickCounter, batchSize);
+                Interlocked.Add(ref _clickCounter, 1);
                 if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
 
-                // Wait for the batch interval
-                long intervalTicks = Stopwatch.Frequency * batchSize / Math.Max(1, cps);
+                // Throttle: wait for interval based on this thread's share of CPS
+                long intervalTicks = Stopwatch.Frequency / myCps;
                 if (_randomDelay)
                 {
                     double jitter = 1.0 + (Random.Shared.NextDouble() * 2 - 1) * (_randomDelayPercent / 100.0);
                     intervalTicks = (long)(intervalTicks * Math.Max(0.2, jitter));
                 }
 
-                if (_useHighPrecision)
+                long msToWait = intervalTicks * 1000 / Stopwatch.Frequency;
+                if (msToWait > 2)
+                    Thread.Sleep((int)(msToWait - 1));
+                while (sw.ElapsedTicks < intervalTicks)
                 {
-                    // High precision: spin-wait using QueryPerformanceCounter (Stopwatch)
-                    while (sw.ElapsedTicks < intervalTicks)
-                    {
-                        if (!_clickerRunning) return;
-                    }
-                }
-                else
-                {
-                    // Standard precision: Thread.Sleep
-                    long msToWait = intervalTicks * 1000 / Stopwatch.Frequency;
-                    if (msToWait > 1)
-                        Thread.Sleep((int)(msToWait - 1));
-                    while (sw.ElapsedTicks < intervalTicks)
-                    {
-                        if (!_clickerRunning) return;
-                        Thread.SpinWait(10);
-                    }
+                    if (!_clickerRunning) return;
+                    Thread.SpinWait(10);
                 }
             }
         }
 
-        private static void SpinWaitMs(int ms)
+        private void StopClicker()
         {
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < ms)
-                Thread.SpinWait(100);
+            lock (_clickLock)
+            {
+                _clickerRunning = false;
+
+                foreach (var t in _clickThreads)
+                    t.Join(500);
+                _clickThreads.Clear();
+
+                timeEndPeriod(1);
+            }
         }
+
+
 
         #endregion
 
@@ -948,6 +870,23 @@ namespace CrosshairOverlay
                 case CrosshairStyle.Arrow:
                     DrawArrow(g, cx, cy, s, t, ow, brush, outlineBrush);
                     break;
+                case CrosshairStyle.XShape:
+                    DrawXShape(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.TriangleDown:
+                    DrawTriangleDown(g, cx, cy, s, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.Crosshairs:
+                    DrawCrossLines(g, cx, cy, s, gap, t, ow, brush, outlineBrush, false);
+                    DrawCircleStyle(g, cx, cy, s, t, ow, brush, outlineBrush);
+                    DrawDotStyle(g, cx, cy, s * 0.4f, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.SquareBrackets:
+                    DrawSquareBrackets(g, cx, cy, s, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.Wings:
+                    DrawWings(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
+                    break;
                 case CrosshairStyle.CustomImage:
                     if (_customImageCache != null)
                         g.DrawImage(_customImageCache, cx - _customImageCache.Width / 2, cy - _customImageCache.Height / 2);
@@ -1039,6 +978,85 @@ namespace CrosshairOverlay
             }
             using var pen = new Pen(brush, t) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
             g.DrawLines(pen, pts);
+        }
+
+        private void DrawXShape(Graphics g, int cx, int cy, float s, float gap, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float half = s;
+            float gapD = gap * 0.7f;
+            var lines = new (PointF a, PointF b)[]
+            {
+                (new(cx - half, cy - half), new(cx - gapD, cy - gapD)),
+                (new(cx + half, cy - half), new(cx + gapD, cy - gapD)),
+                (new(cx - half, cy + half), new(cx - gapD, cy + gapD)),
+                (new(cx + half, cy + half), new(cx + gapD, cy + gapD)),
+            };
+            foreach (var (a, b) in lines)
+            {
+                if (outlineBrush != null)
+                {
+                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    g.DrawLine(op, a, b);
+                }
+                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(p, a, b);
+            }
+        }
+
+        private void DrawTriangleDown(Graphics g, int cx, int cy, float s, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float half = s * 0.9f;
+            var pts = new PointF[] { new(cx - half, cy - half * 0.5f), new(cx, cy + half * 0.7f), new(cx + half, cy - half * 0.5f), new(cx - half, cy - half * 0.5f) };
+            if (outlineBrush != null)
+            {
+                using var op = new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLines(op, pts);
+            }
+            using var pen = new Pen(brush, t) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLines(pen, pts);
+        }
+
+        private void DrawSquareBrackets(Graphics g, int cx, int cy, float s, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float half = s;
+            float tick = half * 0.4f;
+            var brackets = new PointF[][]
+            {
+                new[] { new PointF(cx - half + tick, cy - half), new PointF(cx - half, cy - half), new PointF(cx - half, cy + half), new PointF(cx - half + tick, cy + half) },
+                new[] { new PointF(cx + half - tick, cy - half), new PointF(cx + half, cy - half), new PointF(cx + half, cy + half), new PointF(cx + half - tick, cy + half) },
+            };
+            foreach (var pts2 in brackets)
+            {
+                if (outlineBrush != null)
+                {
+                    using var op = new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    g.DrawLines(op, pts2);
+                }
+                using var p = new Pen(brush, t) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLines(p, pts2);
+            }
+        }
+
+        private void DrawWings(Graphics g, int cx, int cy, float s, float gap, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float half = s;
+            float gapH = gap * 0.5f;
+            var leftWing = new PointF[] { new(cx - half, cy - half * 0.6f), new(cx - gapH, cy), new(cx - half, cy + half * 0.6f) };
+            var rightWing = new PointF[] { new(cx + half, cy - half * 0.6f), new(cx + gapH, cy), new(cx + half, cy + half * 0.6f) };
+            foreach (var pts2 in new[] { leftWing, rightWing })
+            {
+                if (outlineBrush != null)
+                {
+                    using var op = new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    g.DrawLines(op, pts2);
+                }
+                using var p = new Pen(brush, t) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLines(p, pts2);
+            }
         }
 
         #endregion
@@ -1258,9 +1276,7 @@ namespace CrosshairOverlay
                     RightClickMode = _rightClickMode,
                     RandomDelay = _randomDelay,
                     RandomDelayPercent = _randomDelayPercent,
-                    UseSendInput = _useSendInput,
-                    UseMultithreading = _useMultithreading,
-                    UseHighPrecision = _useHighPrecision,
+
                     DynamicCrosshair = _dynamicCrosshair,
                     DynamicMaxSpread = _dynamicMaxSpread,
                     DynamicRecovery = _dynamicRecovery,
@@ -1325,14 +1341,12 @@ namespace CrosshairOverlay
                 if (!string.IsNullOrEmpty(_customImagePath) && File.Exists(_customImagePath))
                     _customImageCache = new Bitmap(_customImagePath);
                 _autoClickerEnabled = data.AutoClickerEnabled;
-                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 5, 500);
+                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 5, 1000);
                 _clickOnHold = data.ClickOnHold;
                 _rightClickMode = data.RightClickMode;
                 _randomDelay = data.RandomDelay;
                 _randomDelayPercent = Math.Clamp(data.RandomDelayPercent, 5, 50);
-                _useSendInput = data.UseSendInput;
-                _useMultithreading = data.UseMultithreading;
-                _useHighPrecision = data.UseHighPrecision;
+
                 _dynamicCrosshair = data.DynamicCrosshair;
                 _dynamicMaxSpread = Math.Clamp(data.DynamicMaxSpread, 1f, 30f);
                 _dynamicRecovery = Math.Clamp(data.DynamicRecovery, 0.05f, 0.5f);

@@ -45,6 +45,10 @@ namespace CrosshairOverlay
         internal static string SecondColorTooltip => Get("Второй цвет для градиента", "Second color for gradient");
         internal static string CrosshairStyle => Get("Стиль прицела", "Crosshair style");
         internal static string CrosshairStyleTooltip => Get("Выберите стиль отображения прицела", "Select crosshair display style");
+        internal static string ChooseImage => Get("Выбрать картинку", "Choose image");
+        internal static string ChooseImageTooltip => Get("Выбрать PNG/JPG картинку для прицела", "Choose PNG/JPG image for crosshair");
+        internal static string ManualRotation => Get("Поворот (°)", "Rotation (°)");
+        internal static string ManualRotationTooltip => Get("Ручной угол поворота прицела (0-360)", "Manual crosshair rotation angle (0-360)");
 
         // ── AUTOCLICKER ──
         internal static string SectionAutoclicker => Get("──  АВТОКЛИКЕР  ──", "──  AUTOCLICKER  ──");
