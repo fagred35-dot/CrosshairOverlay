@@ -62,6 +62,13 @@ namespace CrosshairOverlay
         private readonly Font _fontLabel = new("Segoe UI", 7f);
         private readonly Font _fontClose = new("Segoe UI", 14f, FontStyle.Bold);
 
+        // Scrollbar state
+        private bool _draggingSb;
+        private int _sbGrabOffset;
+        private const int SbWidth = 10;
+        private const int SbRightPad = 4;
+        private const int SbHitPad = 18;
+
         public CrosshairGalleryForm(OverlayForm overlay)
         {
             _overlay = overlay;
@@ -282,13 +289,23 @@ namespace CrosshairOverlay
             g.ResetTransform();
 
             // Scrollbar
-            if (_contentHeight > ClientSize.Height)
+            int viewH = ClientSize.Height;
+            if (_contentHeight > viewH)
             {
-                float ratio = (float)ClientSize.Height / _contentHeight;
-                int barH = Math.Max(30, (int)(ClientSize.Height * ratio));
-                int barY = (int)((float)_scrollY / (_contentHeight - ClientSize.Height) * (ClientSize.Height - barH));
-                using var sbBrush = new SolidBrush(Color.FromArgb(60, 255, 255, 255));
-                using var sbPath = RoundRect(new Rectangle(Width - 8, barY, 5, barH), 3);
+                // Track
+                var trackRect = new Rectangle(Width - SbRightPad - SbWidth, 4, SbWidth, viewH - 8);
+                using (var trackBrush = new SolidBrush(Color.FromArgb(35, 255, 255, 255)))
+                using (var tpath = RoundRect(trackRect, SbWidth / 2))
+                    g.FillPath(trackBrush, tpath);
+
+                float ratio = (float)viewH / _contentHeight;
+                int barH = Math.Max(40, (int)(trackRect.Height * ratio));
+                int maxScroll = _contentHeight - viewH;
+                float scrollRatio = maxScroll > 0 ? (float)_scrollY / maxScroll : 0;
+                int barY = trackRect.Y + (int)((trackRect.Height - barH) * scrollRatio);
+                int alpha = _draggingSb ? 220 : 140;
+                using var sbBrush = new SolidBrush(Color.FromArgb(alpha, SettingsForm.GetAccent()));
+                using var sbPath = RoundRect(new Rectangle(trackRect.X, barY, SbWidth, barH), SbWidth / 2);
                 g.FillPath(sbBrush, sbPath);
             }
         }
@@ -615,6 +632,13 @@ namespace CrosshairOverlay
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+
+            if (_draggingSb)
+            {
+                HandleSbDrag(e.Y);
+                return;
+            }
+
             int oldHover = _hoverIndex;
 
             // Close button hit test
@@ -627,10 +651,56 @@ namespace CrosshairOverlay
                 Invalidate();
         }
 
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (_draggingSb)
+            {
+                _draggingSb = false;
+                Invalidate();
+            }
+        }
+
+        private void HandleSbDrag(int mouseY)
+        {
+            int viewH = ClientSize.Height;
+            int trackTop = 4;
+            int trackH = viewH - 8;
+            int maxScroll = Math.Max(1, _contentHeight - viewH);
+            float ratio = (float)viewH / _contentHeight;
+            int barH = Math.Max(40, (int)(trackH * ratio));
+            int thumbTop = mouseY - trackTop - _sbGrabOffset;
+            int thumbTravel = Math.Max(1, trackH - barH);
+            _scrollY = Math.Clamp((int)((float)thumbTop / thumbTravel * maxScroll), 0, maxScroll);
+            Invalidate();
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
+
+            // Scrollbar hit test (takes priority over cards on its strip)
+            if (_contentHeight > ClientSize.Height && e.X >= Width - SbHitPad)
+            {
+                int viewH = ClientSize.Height;
+                int trackTop = 4;
+                int trackH = viewH - 8;
+                float ratio = (float)viewH / _contentHeight;
+                int barH = Math.Max(40, (int)(trackH * ratio));
+                int maxScroll = _contentHeight - viewH;
+                float scrollRatio = maxScroll > 0 ? (float)_scrollY / maxScroll : 0;
+                int barY = trackTop + (int)((trackH - barH) * scrollRatio);
+
+                _draggingSb = true;
+                if (e.Y >= barY && e.Y < barY + barH)
+                    _sbGrabOffset = e.Y - barY;
+                else
+                    _sbGrabOffset = barH / 2;
+                HandleSbDrag(e.Y);
+                Invalidate();
+                return;
+            }
 
             // Close
             if (_hoverIndex == -999)

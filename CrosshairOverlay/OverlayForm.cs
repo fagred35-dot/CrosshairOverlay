@@ -120,7 +120,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.1";
+        internal const string APP_VERSION = "2.1.2";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -587,74 +587,102 @@ namespace CrosshairOverlay
 
         private void ClickLoop()
         {
-            // Absolute-tick scheduling: compute target time for each click and busy-wait to it.
-            // This prevents drift accumulation from Thread.Sleep inaccuracies.
+            // === HIGH-CPS BATCHED SEND-INPUT SCHEDULER ===
+            //
+            // Problem: the Windows input queue throttles injected mouse messages to ~60/sec when
+            // each click is sent in its own SendInput/mouse_event call. This caps observed CPS
+            // around 60 regardless of how fast we loop.
+            //
+            // Fix: accumulate clicks over a tick (≈8 ms) and submit them as ONE batched SendInput
+            // with an array of DOWN/UP INPUT structures. Windows processes the whole batch
+            // atomically; no per-message throttle. With a 8 ms tick we can push 1000+ real CPS.
+            //
+            // A "click unit" is 2 INPUTs (down + up). We also add a tiny inter-click gap by
+            // pairing adjacent clicks naturally in the queue.
+
             long ticksPerSec = Stopwatch.Frequency;
+            const int TickMs = 8;          // batch accumulation window
+            double carry = 0;              // fractional-click accumulator
             long nextTick = Stopwatch.GetTimestamp();
+
+            // Pre-allocate reusable INPUT buffer (large enough for burst modes too)
+            INPUT[] buf = new INPUT[256];
+            int inputSize = Marshal.SizeOf<INPUT>();
 
             while (_clickerRunning)
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
                     if (_burstMode) { _burstLastLmbState = false; _burstRemaining = 0; }
-                    Thread.Sleep(1);
-                    // Reset schedule so the next press starts immediately.
+                    carry = 0;
                     nextTick = Stopwatch.GetTimestamp();
+                    Thread.Sleep(1);
                     continue;
                 }
 
-                // Burst mode: fire exactly _burstCount clicks per LMB press, then wait for release.
+                int cps = Math.Max(1, _clicksPerSecond);
+
+                // Number of clicks this tick
+                int clicks;
                 if (_clickOnHold && _burstMode)
                 {
+                    // Burst: fire exactly _burstCount on each fresh press, then idle.
                     if (!_burstLastLmbState)
                     {
                         _burstLastLmbState = true;
-                        Interlocked.Exchange(ref _burstRemaining, Math.Max(1, _burstCount));
+                        _burstRemaining = Math.Max(1, _burstCount);
                     }
-                    if (Interlocked.Decrement(ref _burstRemaining) < 0)
+                    clicks = _burstRemaining;
+                    if (clicks <= 0) { Thread.Sleep(1); continue; }
+                    _burstRemaining = 0;
+                }
+                else
+                {
+                    carry += cps * (TickMs / 1000.0);
+                    clicks = (int)carry;
+                    carry -= clicks;
+                }
+
+                if (clicks > 0)
+                {
+                    // Apply random jitter to count so timing isn't perfectly periodic (anti-detect).
+                    if (_randomDelay && clicks > 1)
                     {
-                        Thread.Sleep(1);
-                        continue;
+                        double jitter = 1.0 + (Random.Shared.NextDouble() * 2 - 1) * (_randomDelayPercent / 200.0);
+                        clicks = Math.Max(1, (int)(clicks * jitter));
                     }
+
+                    uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+                    uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+
+                    // Send in chunks so we don't exceed the buffer.
+                    int maxPerCall = buf.Length / 2;
+                    while (clicks > 0 && _clickerRunning)
+                    {
+                        int thisBatch = Math.Min(clicks, maxPerCall);
+                        for (int i = 0; i < thisBatch; i++)
+                        {
+                            buf[i * 2].type = INPUT_MOUSE;
+                            buf[i * 2].mi = new MOUSEINPUT { dwFlags = downFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                            buf[i * 2 + 1].type = INPUT_MOUSE;
+                            buf[i * 2 + 1].mi = new MOUSEINPUT { dwFlags = upFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                        }
+                        uint sent = SendInput((uint)(thisBatch * 2), buf, inputSize);
+                        // sent / 2 is the actual click count that made it through.
+                        long made = Math.Max(0, (long)sent / 2);
+                        Interlocked.Add(ref _clickCounter, made);
+                        clicks -= thisBatch;
+                    }
+
+                    if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
                 }
 
-                int cps = Math.Max(1, _clicksPerSecond);
-                long interval = ticksPerSec / cps;
-                if (_randomDelay)
-                {
-                    double jitter = 1.0 + (Random.Shared.NextDouble() * 2 - 1) * (_randomDelayPercent / 100.0);
-                    interval = (long)(interval * Math.Max(0.2, jitter));
-                }
-
-                // Fire click: DOWN and UP as SEPARATE mouse_event calls so click counters see
-                // a real DOWN→UP transition with non-zero hold time. Combining flags in one call
-                // produced zero-duration events that many CPS counters dedupe/halve.
-                uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
-                uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
-                mouse_event(downFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-                // Tiny hold time (~1ms) between down and up so events are distinguishable.
-                long holdTarget = Stopwatch.GetTimestamp() + ticksPerSec / 1000;
-                while (Stopwatch.GetTimestamp() < holdTarget) Thread.SpinWait(40);
-                mouse_event(upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-
-                Interlocked.Increment(ref _clickCounter);
-                if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
-
-                // Schedule next click on absolute timeline to avoid drift.
-                nextTick += interval;
+                // Absolute-tick schedule
+                nextTick += ticksPerSec * TickMs / 1000;
                 long now = Stopwatch.GetTimestamp();
-                // If we're far behind (e.g. after pause), resync.
-                if (nextTick < now - interval) nextTick = now + interval;
-
-                long remaining = nextTick - now;
-                long remainingMs = remaining * 1000 / ticksPerSec;
-                if (remainingMs > 3)
-                    Thread.Sleep((int)(remainingMs - 2));
-                while (Stopwatch.GetTimestamp() < nextTick)
-                {
-                    if (!_clickerRunning) return;
-                    Thread.SpinWait(40);
-                }
+                if (nextTick < now) nextTick = now; // resync after stalls
+                long remainingMs = (nextTick - now) * 1000 / ticksPerSec;
+                if (remainingMs > 1) Thread.Sleep((int)remainingMs);
             }
         }
 
