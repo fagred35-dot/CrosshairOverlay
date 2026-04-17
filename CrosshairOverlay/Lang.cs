@@ -179,7 +179,8 @@ namespace CrosshairOverlay
             Get("Папка скриншотов", "Shots folder"),
             Get("Пресет +", "Preset +"),
             Get("Пресет −", "Preset −"),
-            Get("Анти-AFK", "Anti-AFK")
+            Get("Анти-AFK", "Anti-AFK"),
+            Get("Выстрел Burst", "Fire burst")
         };
 
         // ── HOTKEY CAPTURE FORM ──

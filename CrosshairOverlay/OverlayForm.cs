@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.7";
+        internal const string APP_VERSION = "2.1.8";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -318,6 +318,7 @@ namespace CrosshairOverlay
             _hkMods[HK_PRESET_NEXT] = CS;   _hkKeys[HK_PRESET_NEXT] = 0xDD;   // ] — next preset
             _hkMods[HK_PRESET_PREV] = CS;   _hkKeys[HK_PRESET_PREV] = 0xDB;   // [ — prev preset
             _hkMods[HK_ANTI_AFK] = CS;      _hkKeys[HK_ANTI_AFK] = 0x4B;      // K — anti-afk
+            _hkMods[HK_BURST_FIRE] = CS;    _hkKeys[HK_BURST_FIRE] = 0x56;    // V — fire burst shot
         }
 
         internal void ReRegisterHotkeys()
@@ -389,7 +390,8 @@ namespace CrosshairOverlay
         private const int HK_PRESET_NEXT = 19;
         private const int HK_PRESET_PREV = 20;
         private const int HK_ANTI_AFK = 21;
-        private const int HOTKEY_COUNT = 21;
+        private const int HK_BURST_FIRE = 22;
+        internal const int HOTKEY_COUNT = 22;
         private const int MOD_NOREPEAT = 0x4000; // Prevent key repeat
         #endregion
 
@@ -581,6 +583,9 @@ namespace CrosshairOverlay
                         _trayIcon?.ShowBalloonTip(1500, "Crosshair Overlay",
                             (Lang.IsRussian ? "Анти-AFK: " : "Anti-AFK: ") + (_antiAfkEnabled ? "ON" : "OFF"),
                             ToolTipIcon.Info);
+                        break;
+                    case HK_BURST_FIRE:
+                        FireBurstOnce();
                         break;
                 }
             }
@@ -836,6 +841,45 @@ namespace CrosshairOverlay
                 _burstRunning = false;
                 try { _burstThread?.Join(500); } catch { }
                 _burstThread = null;
+                BeepMuteRelease();
+            }
+        }
+
+        /// <summary>
+        /// Fire one burst shot immediately (used by the dedicated burst hotkey).
+        /// Independent from the _burstMode toggle and from physical LMB state.
+        /// </summary>
+        internal void FireBurstOnce()
+        {
+            int count = Math.Max(1, _burstCount);
+            uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+            uint upFlag   = _rightClickMode ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
+
+            BeepMuteAcquire();
+            try
+            {
+                INPUT[] fbuf = new INPUT[32];
+                int fInputSize = Marshal.SizeOf<INPUT>();
+                const int CLICKS_PER_CALL = 16;
+                while (count > 0)
+                {
+                    int thisBatch = Math.Min(count, CLICKS_PER_CALL);
+                    for (int i = 0; i < thisBatch; i++)
+                    {
+                        fbuf[i * 2].type = INPUT_MOUSE;
+                        fbuf[i * 2].mi = new MOUSEINPUT { dwFlags = downFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                        fbuf[i * 2 + 1].type = INPUT_MOUSE;
+                        fbuf[i * 2 + 1].mi = new MOUSEINPUT { dwFlags = upFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                    }
+                    uint sent = SendInput((uint)(thisBatch * 2), fbuf, fInputSize);
+                    Interlocked.Add(ref _clickCounter, Math.Max(0, (long)sent / 2));
+                    count -= thisBatch;
+                    if (count > 0) Thread.Sleep(0);
+                }
+                if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
+            }
+            finally
+            {
                 BeepMuteRelease();
             }
         }

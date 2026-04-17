@@ -465,7 +465,7 @@ namespace CrosshairOverlay
                     Color.OrangeRed, Lang.IsRussian ? "Обнаружены одинаковые биндинги" : "Duplicate bindings");
             }
 
-            for (int i = 1; i <= 21; i++)
+            for (int i = 1; i <= OverlayForm.HOTKEY_COUNT; i++)
                 AddHotkeyButton(i);
             AddSpacer();
         }
