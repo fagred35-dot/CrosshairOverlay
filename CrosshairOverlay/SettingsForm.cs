@@ -55,7 +55,9 @@ namespace CrosshairOverlay
 
         private const int PanelWidth = 340;
         private const int ItemPadX = 16;
-        private const int HeaderHeight = 68;
+        private const int HeaderTitleHeight = 68;    // title bar
+        private const int HeaderHeight = 68 + 38;    // title bar + tab strip (total header region)
+        private const int TabStripY = 68;             // y of tab strip inside header
         private const int ControlRadius = 10;
 
         // Themes
@@ -83,6 +85,20 @@ namespace CrosshairOverlay
         private const int ScrollbarWidth = 8;
         private const int ScrollbarRightPad = 3;
         private const int ScrollbarHitPad = 14; // clickable area (wider than visual bar)
+
+        // ═══════════════════════════════════════════════════
+        //  v2.1.3 — Tabs & Search
+        // ═══════════════════════════════════════════════════
+        internal enum Tab { Appearance = 0, Effects = 1, Autoclicker = 2, Hotkeys = 3, Advanced = 4, About = 5 }
+        private Tab _currentTab = Tab.Appearance;
+        private const int TabBarHeight = 38;
+        private static readonly string[] TabIconsRu = { "Вид", "Эффект", "Клик", "Хоткеи", "Дополн.", "О прог." };
+        private static readonly string[] TabIconsEn = { "Look", "Effects", "Click", "Hotkeys", "Advanced", "About" };
+
+        // Search
+        private TextBox? _searchBox;
+        private string _searchText = "";
+
 
         // Cached fonts
         private readonly Font _fontTitle = new("Segoe UI", 16f, FontStyle.Bold);
@@ -177,10 +193,81 @@ namespace CrosshairOverlay
         private void BuildItems()
         {
             _items.Clear();
-            BuildCrosshairTab();
+
+            // Apply UI theme palette
+            ApplyUiTheme(UiThemePresets.Current);
+
+            // If searching, build all tabs then filter
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                BuildAppearanceTab();
+                BuildEffectsTab();
+                BuildAutoclickerTab();
+                BuildHotkeysTab();
+                BuildAdvancedTab();
+                BuildAboutTab();
+                FilterBySearch();
+                return;
+            }
+
+            switch (_currentTab)
+            {
+                case Tab.Appearance: BuildAppearanceTab(); break;
+                case Tab.Effects: BuildEffectsTab(); break;
+                case Tab.Autoclicker: BuildAutoclickerTab(); break;
+                case Tab.Hotkeys: BuildHotkeysTab(); break;
+                case Tab.Advanced: BuildAdvancedTab(); break;
+                case Tab.About: BuildAboutTab(); break;
+            }
         }
 
-        private void BuildCrosshairTab()
+        private void FilterBySearch()
+        {
+            string s = _searchText.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(s)) return;
+            var filtered = new System.Collections.Generic.List<UiItem>();
+            UiItem? currentSection = null;
+            bool sectionAdded = false;
+            foreach (var it in _items)
+            {
+                if (it.Type == UiType.Section)
+                {
+                    currentSection = it;
+                    sectionAdded = false;
+                    continue;
+                }
+                if (it.Type == UiType.Spacer) continue;
+                string hay = (it.Label + " " + it.Tooltip).ToLowerInvariant();
+                if (hay.Contains(s))
+                {
+                    if (!sectionAdded && currentSection != null)
+                    {
+                        filtered.Add(currentSection);
+                        sectionAdded = true;
+                    }
+                    filtered.Add(it);
+                }
+            }
+            _items.Clear();
+            _items.AddRange(filtered);
+            if (_items.Count == 0)
+            {
+                _items.Add(new UiItem { Type = UiType.Section, Label = Lang.IsRussian ? "Ничего не найдено" : "No results", Height = 32 });
+            }
+        }
+
+        private void ApplyUiTheme(UiThemePresets.Preset p)
+        {
+            var c = UiThemePresets.Colors(p);
+            BgColor = c.bg;
+            TextMain = c.text;
+            TextDim = c.textDim;
+            CardBg = c.card;
+            // Accent + Glow kept from ThemeGradients (user-picked color theme)
+            _bgDirty = true;
+        }
+
+        private void BuildAppearanceTab()
         {
             // ── LANGUAGE ──
             AddSection(Lang.SectionLanguage);
@@ -195,7 +282,7 @@ namespace CrosshairOverlay
                 Lang.LanguageTooltip);
             AddSpacer();
 
-            // ── THEME ──
+            // ── COLOR THEME ──
             AddSection(Lang.SectionTheme);
             _items.Add(new UiItem
             {
@@ -206,54 +293,44 @@ namespace CrosshairOverlay
                 SelectedStyle = _currentTheme,
                 StyleNames = ThemeNames,
                 IsThemeSelector = true,
+                OnStyleChanged = v => ApplyTheme(v)
+            });
+
+            // ── UI THEME (Dark/Light/OLED/Neon) ──
+            _items.Add(new UiItem
+            {
+                Type = UiType.StyleSelector,
+                Label = Lang.IsRussian ? "Тема UI" : "UI Theme",
+                Tooltip = Lang.IsRussian ? "Dark / Light / OLED / Neon" : "Dark / Light / OLED / Neon",
+                Height = 50,
+                SelectedStyle = (int)UiThemePresets.Current,
+                StyleNames = new[] { "Dark", "Light", "OLED", "Neon" },
                 OnStyleChanged = v =>
                 {
-                    ApplyTheme(v);
+                    UiThemePresets.Current = (UiThemePresets.Preset)v;
+                    _overlay.SaveSettings();
+                    _bgDirty = true;
+                    BuildItems(); ComputeLayout(); Invalidate();
                 }
             });
             AddSpacer();
 
             // ── CROSSHAIR ──
             AddSection(Lang.SectionCrosshair);
-            AddSlider(Lang.Size, _overlay._size, 4, 100, 1,
-                v => _overlay._size = v,
-                Lang.SizeTooltip);
-            AddSlider(Lang.Thickness, _overlay._thickness, 1, 10, 1,
-                v => _overlay._thickness = v,
-                Lang.ThicknessTooltip);
-            AddSlider(Lang.Gap, _overlay._gap, 0, 30, 1,
-                v => _overlay._gap = v,
-                Lang.GapTooltip);
+            AddSlider(Lang.Size, _overlay._size, 4, 100, 1, v => _overlay._size = v, Lang.SizeTooltip);
+            AddSlider(Lang.Thickness, _overlay._thickness, 1, 10, 1, v => _overlay._thickness = v, Lang.ThicknessTooltip);
+            AddSlider(Lang.Gap, _overlay._gap, 0, 30, 1, v => _overlay._gap = v, Lang.GapTooltip);
             AddSlider(Lang.Opacity, _overlay._opacity, 10, 255, 5,
-                v => { _overlay._opacity = v; _overlay._targetOpacity = v; },
-                Lang.OpacityTooltip);
-            AddSlider(Lang.OffsetX, _overlay._offsetX, -500, 500, 1,
-                v => _overlay._offsetX = v,
-                Lang.OffsetXTooltip);
-            AddSlider(Lang.OffsetY, _overlay._offsetY, -500, 500, 1,
-                v => _overlay._offsetY = v,
-                Lang.OffsetYTooltip);
-            AddToggle(Lang.CenterDot, _overlay._showDot,
-                v => _overlay._showDot = v,
-                Lang.CenterDotTooltip);
-            AddSlider(Lang.DotSize, _overlay._dotSize, 1, 10, 1,
-                v => _overlay._dotSize = v,
-                Lang.DotSizeTooltip);
-            AddToggle(Lang.DotPulse, _overlay._dotPulse,
-                v => _overlay._dotPulse = v,
-                Lang.DotPulseTooltip);
-            AddColor(Lang.CrossColor, _overlay._crossColor,
-                c => _overlay._crossColor = c,
-                Lang.CrossColorTooltip);
-            AddToggle(Lang.RainbowMode, _overlay._rainbowMode,
-                v => _overlay._rainbowMode = v,
-                Lang.RainbowModeTooltip);
-            AddToggle(Lang.Gradient, _overlay._useGradient,
-                v => _overlay._useGradient = v,
-                Lang.GradientTooltip);
-            AddColor(Lang.SecondColor, _overlay._crossColor2,
-                c => _overlay._crossColor2 = c,
-                Lang.SecondColorTooltip);
+                v => { _overlay._opacity = v; _overlay._targetOpacity = v; }, Lang.OpacityTooltip);
+            AddSlider(Lang.OffsetX, _overlay._offsetX, -500, 500, 1, v => _overlay._offsetX = v, Lang.OffsetXTooltip);
+            AddSlider(Lang.OffsetY, _overlay._offsetY, -500, 500, 1, v => _overlay._offsetY = v, Lang.OffsetYTooltip);
+            AddToggle(Lang.CenterDot, _overlay._showDot, v => _overlay._showDot = v, Lang.CenterDotTooltip);
+            AddSlider(Lang.DotSize, _overlay._dotSize, 1, 10, 1, v => _overlay._dotSize = v, Lang.DotSizeTooltip);
+            AddToggle(Lang.DotPulse, _overlay._dotPulse, v => _overlay._dotPulse = v, Lang.DotPulseTooltip);
+            AddColor(Lang.CrossColor, _overlay._crossColor, c => _overlay._crossColor = c, Lang.CrossColorTooltip);
+            AddToggle(Lang.RainbowMode, _overlay._rainbowMode, v => _overlay._rainbowMode = v, Lang.RainbowModeTooltip);
+            AddToggle(Lang.Gradient, _overlay._useGradient, v => _overlay._useGradient = v, Lang.GradientTooltip);
+            AddColor(Lang.SecondColor, _overlay._crossColor2, c => _overlay._crossColor2 = c, Lang.SecondColorTooltip);
             AddStyle();
             AddButton(Lang.OpenGallery, () =>
             {
@@ -264,126 +341,273 @@ namespace CrosshairOverlay
                 BuildItems(); ComputeLayout(); Invalidate();
             }, Lang.OpenGalleryTooltip);
             AddSpacer();
+        }
 
-            // ── AUTOCLICKER ──
-            AddSection(Lang.SectionAutoclicker);
-            AddToggle(Lang.EnableAutoclicker, _overlay._autoClickerEnabled,
-                v => { _overlay._autoClickerEnabled = v; _overlay.UpdateClickerState(); },
-                Lang.EnableAutoclickerTooltip);
-            AddToggle(Lang.HoldMode, _overlay._clickOnHold,
-                v => { _overlay._clickOnHold = v; },
-                Lang.HoldModeTooltip);
-            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 5, 1000, 5,
-                v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); },
-                Lang.ClicksPerSecTooltip);
-            AddToggle(Lang.RightClick, _overlay._rightClickMode,
-                v => _overlay._rightClickMode = v,
-                Lang.RightClickTooltip);
-            AddToggle(Lang.RandomDelay, _overlay._randomDelay,
-                v => _overlay._randomDelay = v,
-                Lang.RandomDelayTooltip);
-            AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5,
-                v => _overlay._randomDelayPercent = v,
-                Lang.SpreadPercentTooltip);
-
-            AddInfo(Lang.ClickCounter,
-                _overlay.GetClickCounter().ToString("N0"),
-                AccentGlow,
-                Lang.ClickCounterTooltip);
-            AddInfo(Lang.HotkeyLabel,
-                "Ctrl+Shift+A",
-                AccentGlow,
-                Lang.HotkeyAutoTooltip);
-            AddSpacer();
-
+        private void BuildEffectsTab()
+        {
             // ── EFFECTS ──
             AddSection(Lang.SectionEffects);
-            AddToggle(Lang.Rotation, _overlay._spin,
-                v => _overlay._spin = v,
-                Lang.RotationTooltip);
-            AddSlider(Lang.RotationSpeed, (int)(_overlay._spinSpeed * 10), 1, 100, 1,
-                v => _overlay._spinSpeed = v / 10f,
-                Lang.RotationSpeedTooltip);
-            AddToggle(Lang.Outline, _overlay._showOutline,
-                v => _overlay._showOutline = v,
-                Lang.OutlineTooltip);
-            AddColor(Lang.OutlineColor, _overlay._outlineColor,
-                c => _overlay._outlineColor = c,
-                Lang.OutlineColorTooltip);
-            AddSlider(Lang.OutlineWidth, (int)(_overlay._outlineWidth * 10), 5, 50, 1,
-                v => _overlay._outlineWidth = v / 10f,
-                Lang.OutlineWidthTooltip);
-            AddToggle(Lang.Shadow, _overlay._showShadow,
-                v => _overlay._showShadow = v,
-                Lang.ShadowTooltip);
-            AddToggle(Lang.AntiAlias, _overlay._antiAlias,
-                v => _overlay._antiAlias = v,
-                Lang.AntiAliasTooltip);
+            AddToggle(Lang.Rotation, _overlay._spin, v => _overlay._spin = v, Lang.RotationTooltip);
+            AddSlider(Lang.RotationSpeed, (int)(_overlay._spinSpeed * 10), 1, 100, 1, v => _overlay._spinSpeed = v / 10f, Lang.RotationSpeedTooltip);
+            AddToggle(Lang.Outline, _overlay._showOutline, v => _overlay._showOutline = v, Lang.OutlineTooltip);
+            AddColor(Lang.OutlineColor, _overlay._outlineColor, c => _overlay._outlineColor = c, Lang.OutlineColorTooltip);
+            AddSlider(Lang.OutlineWidth, (int)(_overlay._outlineWidth * 10), 5, 50, 1, v => _overlay._outlineWidth = v / 10f, Lang.OutlineWidthTooltip);
+            AddToggle(Lang.Shadow, _overlay._showShadow, v => _overlay._showShadow = v, Lang.ShadowTooltip);
+            AddToggle(Lang.AntiAlias, _overlay._antiAlias, v => _overlay._antiAlias = v, Lang.AntiAliasTooltip);
             AddSpacer();
 
             // ── DYNAMIC CROSSHAIR ──
             AddSection(Lang.SectionDynamic);
-            AddToggle(Lang.DynamicCrosshair, _overlay._dynamicCrosshair,
-                v => _overlay._dynamicCrosshair = v,
-                Lang.DynamicCrosshairTooltip);
-            AddSlider(Lang.MaxSpread, (int)_overlay._dynamicMaxSpread, 1, 30, 1,
-                v => _overlay._dynamicMaxSpread = v,
-                Lang.MaxSpreadTooltip);
-            AddSlider(Lang.RecoverySpeed, (int)(_overlay._dynamicRecovery * 100), 5, 50, 5,
-                v => _overlay._dynamicRecovery = v / 100f,
-                Lang.RecoverySpeedTooltip);
+            AddToggle(Lang.DynamicCrosshair, _overlay._dynamicCrosshair, v => _overlay._dynamicCrosshair = v, Lang.DynamicCrosshairTooltip);
+            AddSlider(Lang.MaxSpread, (int)_overlay._dynamicMaxSpread, 1, 30, 1, v => _overlay._dynamicMaxSpread = v, Lang.MaxSpreadTooltip);
+            AddSlider(Lang.RecoverySpeed, (int)(_overlay._dynamicRecovery * 100), 5, 50, 5, v => _overlay._dynamicRecovery = v / 100f, Lang.RecoverySpeedTooltip);
             AddSpacer();
 
             // ── VISUAL ──
             AddSection(Lang.SectionVisual);
-            AddToggle(Lang.GlowEffect, _overlay._glowEnabled,
-                v => _overlay._glowEnabled = v,
-                Lang.GlowEffectTooltip);
-            AddSlider(Lang.GlowSize, _overlay._glowSize, 2, 20, 1,
-                v => _overlay._glowSize = v,
-                Lang.GlowSizeTooltip);
-            AddSlider(Lang.GlowBrightness, _overlay._glowAlpha, 20, 150, 5,
-                v => _overlay._glowAlpha = v,
-                Lang.GlowBrightnessTooltip);
-            AddToggle(Lang.HitMarker, _overlay._hitMarkerEnabled,
-                v => _overlay._hitMarkerEnabled = v,
-                Lang.HitMarkerTooltip);
-            AddSlider(Lang.HitMarkerSize, (int)_overlay._hitMarkerSize, 4, 30, 1,
-                v => _overlay._hitMarkerSize = v,
-                Lang.HitMarkerSizeTooltip);
+            AddToggle(Lang.GlowEffect, _overlay._glowEnabled, v => _overlay._glowEnabled = v, Lang.GlowEffectTooltip);
+            AddSlider(Lang.GlowSize, _overlay._glowSize, 2, 20, 1, v => _overlay._glowSize = v, Lang.GlowSizeTooltip);
+            AddSlider(Lang.GlowBrightness, _overlay._glowAlpha, 20, 150, 5, v => _overlay._glowAlpha = v, Lang.GlowBrightnessTooltip);
+            AddToggle(Lang.HitMarker, _overlay._hitMarkerEnabled, v => _overlay._hitMarkerEnabled = v, Lang.HitMarkerTooltip);
+            AddSlider(Lang.HitMarkerSize, (int)_overlay._hitMarkerSize, 4, 30, 1, v => _overlay._hitMarkerSize = v, Lang.HitMarkerSizeTooltip);
+            AddSpacer();
+        }
+
+        private void BuildAutoclickerTab()
+        {
+            AddSection(Lang.SectionAutoclicker);
+            AddToggle(Lang.EnableAutoclicker, _overlay._autoClickerEnabled,
+                v => { _overlay._autoClickerEnabled = v; _overlay.UpdateClickerState(); },
+                Lang.EnableAutoclickerTooltip);
+            AddToggle(Lang.HoldMode, _overlay._clickOnHold, v => _overlay._clickOnHold = v, Lang.HoldModeTooltip);
+            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 5, 1000, 5,
+                v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); }, Lang.ClicksPerSecTooltip);
+            AddToggle(Lang.RightClick, _overlay._rightClickMode, v => _overlay._rightClickMode = v, Lang.RightClickTooltip);
+            AddToggle(Lang.RandomDelay, _overlay._randomDelay, v => _overlay._randomDelay = v, Lang.RandomDelayTooltip);
+            AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5, v => _overlay._randomDelayPercent = v, Lang.SpreadPercentTooltip);
+            AddToggle(Lang.IsRussian ? "Burst режим" : "Burst mode", _overlay._burstMode, v => _overlay._burstMode = v,
+                Lang.IsRussian ? "Выстрел ровно N кликов при нажатии ЛКМ" : "Fire N clicks per LMB press");
+            AddSlider(Lang.IsRussian ? "Кликов в Burst" : "Burst count", _overlay._burstCount, 1, 50, 1, v => _overlay._burstCount = v,
+                Lang.IsRussian ? "Сколько кликов за одно нажатие" : "Clicks per press");
             AddSpacer();
 
-            // ── ACTIONS ──
+            // Session limits (#40, #41)
+            AddSection(Lang.IsRussian ? "──  ЛИМИТЫ СЕССИИ  ──" : "──  SESSION LIMITS  ──");
+            AddSlider(Lang.IsRussian ? "Лимит кликов (0=выкл)" : "Click limit (0=off)",
+                _overlay._sessionClickLimit, 0, 100000, 100,
+                v => _overlay._sessionClickLimit = v,
+                Lang.IsRussian ? "Авто-стоп при достижении количества" : "Auto-stop after N clicks");
+            AddSlider(Lang.IsRussian ? "Таймер, мин (0=выкл)" : "Timer, min (0=off)",
+                _overlay._sessionTimerMin, 0, 120, 1,
+                v => _overlay._sessionTimerMin = v,
+                Lang.IsRussian ? "Авто-стоп через N минут" : "Auto-stop after N minutes");
+            AddSpacer();
+
+            // Anti-AFK (#37)
+            AddSection(Lang.IsRussian ? "──  АНТИ-AFK  ──" : "──  ANTI-AFK  ──");
+            AddToggle(Lang.IsRussian ? "Анти-AFK" : "Anti-AFK",
+                _overlay._antiAfkEnabled, v => _overlay._antiAfkEnabled = v,
+                Lang.IsRussian ? "Клик при отсутствии активности" : "Click on inactivity");
+            AddSlider(Lang.IsRussian ? "Интервал, сек" : "Interval, sec",
+                _overlay._antiAfkSeconds, 5, 600, 5,
+                v => _overlay._antiAfkSeconds = v,
+                Lang.IsRussian ? "Через сколько секунд бездействия" : "Seconds of inactivity");
+            AddSpacer();
+
+            // Jitter aim (#47)
+            AddToggle(Lang.IsRussian ? "Jitter Aim" : "Jitter Aim",
+                _overlay._jitterAim, v => _overlay._jitterAim = v,
+                Lang.IsRussian ? "Мелкие случайные смещения курсора" : "Small random mouse offsets");
+            AddSlider(Lang.IsRussian ? "Jitter px" : "Jitter px",
+                _overlay._jitterAimPx, 1, 20, 1, v => _overlay._jitterAimPx = v,
+                Lang.IsRussian ? "Размах смещения в пикселях" : "Offset amplitude in pixels");
+            AddSpacer();
+
+            AddInfo(Lang.ClickCounter, _overlay.GetClickCounter().ToString("N0"), AccentGlow, Lang.ClickCounterTooltip);
+            AddInfo(Lang.HotkeyLabel, OverlayForm.HotkeyToString(_overlay._hkMods[10], _overlay._hkKeys[10]), AccentGlow, Lang.HotkeyAutoTooltip);
+            AddSpacer();
+        }
+
+        private void BuildHotkeysTab()
+        {
+            AddSection(Lang.SectionHotkeys);
+
+            // Conflict detector (#55)
+            var conflicts = HotkeyConflictDetector.FindConflicts(_overlay._hkMods, _overlay._hkKeys);
+            if (conflicts.Count > 0)
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append(Lang.IsRussian ? "⚠ Конфликт: " : "⚠ Conflict: ");
+                foreach (var (a, b) in conflicts)
+                {
+                    sb.Append($"{Lang.HotkeyNamesArr[a]} ↔ {Lang.HotkeyNamesArr[b]}; ");
+                }
+                AddInfo(Lang.IsRussian ? "Конфликты" : "Conflicts", sb.ToString(),
+                    Color.OrangeRed, Lang.IsRussian ? "Обнаружены одинаковые биндинги" : "Duplicate bindings");
+            }
+
+            for (int i = 1; i <= 21; i++)
+                AddHotkeyButton(i);
+            AddSpacer();
+        }
+
+        private void BuildAdvancedTab()
+        {
+            // Profile import/export (#26, #27)
+            AddSection(Lang.IsRussian ? "──  ПРОФИЛИ  ──" : "──  PROFILES  ──");
+            AddButton(Lang.IsRussian ? "Экспорт профиля в файл…" : "Export profile to file…",
+                () => ExportProfileFile(),
+                Lang.IsRussian ? "Сохранить все настройки в JSON" : "Save all settings to JSON");
+            AddButton(Lang.IsRussian ? "Импорт профиля из файла…" : "Import profile from file…",
+                () => ImportProfileFile(),
+                Lang.IsRussian ? "Загрузить настройки из JSON" : "Load settings from JSON");
+            AddButton(Lang.IsRussian ? "Экспорт кода прицела" : "Export crosshair code",
+                () => ExportCrosshairCode(),
+                Lang.IsRussian ? "Скопировать короткий код в буфер" : "Copy short share code to clipboard");
+            AddButton(Lang.IsRussian ? "Импорт кода прицела" : "Import crosshair code",
+                () => ImportCrosshairCode(),
+                Lang.IsRussian ? "Вставить код из буфера" : "Paste code from clipboard");
+            AddSpacer();
+
+            // System (#86, #95)
+            AddSection(Lang.IsRussian ? "──  СИСТЕМА  ──" : "──  SYSTEM  ──");
+            AddToggle(Lang.IsRussian ? "Автозапуск с Windows" : "Autostart with Windows",
+                AutostartManager.IsEnabled,
+                v => AutostartManager.Set(v),
+                Lang.IsRussian ? "Добавить в реестр HKCU\\...\\Run" : "Add to HKCU\\...\\Run");
+            AddToggle(Lang.IsRussian ? "Portable-режим" : "Portable mode",
+                PortableMode.IsPortable,
+                v =>
+                {
+                    PortableMode.Enable(v);
+                    _overlay.SaveSettings();
+                    _bgDirty = true;
+                    BuildItems(); ComputeLayout(); Invalidate();
+                },
+                Lang.IsRussian ? "Хранить настройки рядом с exe (portable.flag)" : "Store settings next to exe");
+            AddToggle(Lang.IsRussian ? "Скрыть в полноэкр. играх" : "Hide in fullscreen apps",
+                _overlay._hideInFullscreen,
+                v => _overlay._hideInFullscreen = v,
+                Lang.IsRussian ? "Скрывать прицел когда игра в fullscreen" : "Hide overlay when a fullscreen app is foreground");
+            AddButton(Lang.IsRussian ? "Открыть папку скриншотов" : "Open screenshots folder",
+                () => _overlay.OpenScreenshotsFolder(),
+                "");
+            AddSpacer();
+
+            // Actions (reset, update)
             AddSection(Lang.SectionActions);
             AddButton(Lang.ResetSettings, () =>
             {
                 _overlay.ResetToDefaults();
-                BuildItems();
-                ComputeLayout();
-                Invalidate();
+                BuildItems(); ComputeLayout(); Invalidate();
             }, Lang.ResetSettingsTooltip);
-            AddButton(Lang.CloseMenu, () => SlideOut(),
-                Lang.CloseMenuTooltip);
-            AddSpacer();
-
-            // ── UPDATE ──
-            AddSection(Lang.SectionUpdate);
+            AddButton(Lang.CloseMenu, () => SlideOut(), Lang.CloseMenuTooltip);
             _items.Add(new UiItem
             {
-                Type = UiType.Button,
-                Label = Lang.CheckUpdate,
-                Tooltip = Lang.CheckUpdateTooltip,
-                Height = 38,
-                OnClick = () => _overlay.CheckForUpdateAsync(this)
+                Type = UiType.Button, Label = Lang.CheckUpdate, Tooltip = Lang.CheckUpdateTooltip,
+                Height = 38, OnClick = () => _overlay.CheckForUpdateAsync(this)
             });
             AddSpacer();
+        }
 
-            // ── HOTKEYS ──
-            AddSection(Lang.SectionHotkeys);
-            for (int i = 1; i <= 11; i++)
-                AddHotkeyButton(i);
+        private void BuildAboutTab()
+        {
+            AddSection(Lang.IsRussian ? "──  О ПРОГРАММЕ  ──" : "──  ABOUT  ──");
+            AddInfo("Version", OverlayForm.APP_VERSION, AccentGlow, "");
+            var u = UsageTracker.Current;
+            AddInfo(Lang.IsRussian ? "Сегодня" : "Today", UsageTracker.FormatDuration(u.SecondsToday), TextMain, "");
+            AddInfo(Lang.IsRussian ? "Всего" : "Total", UsageTracker.FormatDuration(u.SecondsTotal), TextMain, "");
+            AddInfo(Lang.IsRussian ? "Стрик" : "Streak", u.StreakDays.ToString() + (Lang.IsRussian ? " дн." : " d"), AccentGlow, "");
+            AddInfo(Lang.IsRussian ? "Всего кликов" : "Total clicks", u.TotalClicks.ToString("N0"), TextMain, "");
+            AddInfo(Lang.IsRussian ? "Макс. CPS" : "Max CPS", u.MaxCps.ToString(), AccentGlow, "");
+            AddSpacer();
+
+            AddSection(Lang.IsRussian ? "──  ССЫЛКИ  ──" : "──  LINKS  ──");
+            AddButton("GitHub", () => ShellHelper.OpenFolder("https://github.com/fagred35-dot/CrosshairOverlay"), "");
+            AddButton(Lang.IsRussian ? "Достижения" : "Achievements",
+                () => ShowAchievements(), Lang.IsRussian ? "Плашки 1M/10h/..." : "1M/10h/... badges");
             AddSpacer();
         }
+
+        private void ExportProfileFile()
+        {
+            using var sfd = new SaveFileDialog { Filter = "JSON profile|*.json", FileName = "crosshair_profile.json" };
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+            _overlay.SaveSettings();
+            if (ProfileIO.ExportToFile(OverlayForm._settingsPath, sfd.FileName))
+                MessageBox.Show(this, Lang.IsRussian ? "Профиль экспортирован" : "Profile exported", "OK");
+            else
+                MessageBox.Show(this, Lang.IsRussian ? "Ошибка экспорта" : "Export error", "Error");
+        }
+
+        private void ImportProfileFile()
+        {
+            using var ofd = new OpenFileDialog { Filter = "JSON profile|*.json" };
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+            if (ProfileIO.ImportFromFile(ofd.FileName, OverlayForm._settingsPath))
+            {
+                MessageBox.Show(this, Lang.IsRussian ? "Импортировано. Перезапуск применит все изменения." : "Imported. Restart to apply.", "OK");
+            }
+            else
+                MessageBox.Show(this, Lang.IsRussian ? "Ошибка импорта" : "Import error", "Error");
+        }
+
+        private void ExportCrosshairCode()
+        {
+            string code = ProfileIO.ExportCrosshairCode(_overlay);
+            try { Clipboard.SetText(code); } catch { }
+            MessageBox.Show(this, (Lang.IsRussian ? "Код скопирован в буфер:\n\n" : "Code copied to clipboard:\n\n") + code, "OK");
+        }
+
+        private void ImportCrosshairCode()
+        {
+            string code = "";
+            try { code = Clipboard.GetText() ?? ""; } catch { }
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                MessageBox.Show(this, Lang.IsRussian ? "Буфер пуст" : "Clipboard empty", "Error");
+                return;
+            }
+            if (ProfileIO.ImportCrosshairCode(code, _overlay))
+            {
+                _overlay.SaveSettings();
+                _overlay._needsStaticRender = true;
+                BuildItems(); ComputeLayout(); Invalidate();
+                MessageBox.Show(this, Lang.IsRussian ? "Прицел импортирован" : "Crosshair imported", "OK");
+            }
+            else
+                MessageBox.Show(this, Lang.IsRussian ? "Неверный код" : "Invalid code", "Error");
+        }
+
+        private void ShowAchievements()
+        {
+            var u = UsageTracker.Current;
+            var ach = new System.Text.StringBuilder();
+            ach.AppendLine(Lang.IsRussian ? "🏆 ДОСТИЖЕНИЯ" : "🏆 ACHIEVEMENTS");
+            ach.AppendLine();
+            void A(string name, bool unlocked) => ach.AppendLine((unlocked ? "✔ " : "✗ ") + name);
+            A(Lang.IsRussian ? "Первый запуск" : "First launch", true);
+            A(Lang.IsRussian ? "10 000 кликов" : "10K clicks", u.TotalClicks >= 10000);
+            A(Lang.IsRussian ? "100 000 кликов" : "100K clicks", u.TotalClicks >= 100000);
+            A(Lang.IsRussian ? "1 миллион кликов" : "1M clicks", u.TotalClicks >= 1000000);
+            A(Lang.IsRussian ? "1 час использования" : "1 hour active", u.SecondsTotal >= 3600);
+            A(Lang.IsRussian ? "10 часов использования" : "10 hours active", u.SecondsTotal >= 36000);
+            A(Lang.IsRussian ? "Стрик 7 дней" : "7-day streak", u.StreakDays >= 7);
+            A(Lang.IsRussian ? "500+ CPS" : "500+ CPS", u.MaxCps >= 500);
+            MessageBox.Show(this, ach.ToString(), "Achievements");
+        }
+
+        // Legacy builder retained for safety (unused now that we dispatch by tab).
+        private void BuildCrosshairTab()
+        {
+            BuildAppearanceTab();
+            BuildEffectsTab();
+            BuildAutoclickerTab();
+            BuildAdvancedTab();
+            BuildHotkeysTab();
+            BuildAboutTab();
+        }
+
 
         private void AddSection(string label)
         {
@@ -687,7 +911,7 @@ namespace CrosshairOverlay
             g.DrawString(Lang.HeaderTitle, _fontTitle, titleBrush, 20, 14);
 
             using var dimBrush = new SolidBrush(TextMuted);
-            g.DrawString(Lang.HeaderSub, _fontSmall, dimBrush, 22, 40);
+            g.DrawString(Lang.HeaderSub + "  v" + OverlayForm.APP_VERSION, _fontSmall, dimBrush, 22, 40);
 
             // Close button — glass pill
             var closeBtnRect = new Rectangle(PanelWidth - 48, 14, 32, 32);
@@ -702,6 +926,46 @@ namespace CrosshairOverlay
             using var closeFg = new SolidBrush(closeHover ? Color.White : TextDim);
             var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString("✕", _fontClose, closeFg, closeBtnRect, sf);
+
+            DrawTabStrip(g);
+        }
+
+        private Rectangle GetTabRect(int tabIndex)
+        {
+            int count = 6;
+            int tabW = (PanelWidth - 8 - 8) / count;
+            int x = 8 + tabIndex * tabW;
+            int y = TabStripY;
+            return new Rectangle(x, y + 2, tabW - 2, 32);
+        }
+
+        private void DrawTabStrip(Graphics g)
+        {
+            var names = Lang.IsRussian ? TabIconsRu : TabIconsEn;
+            Point mouse = PointToClient(Cursor.Position);
+            bool searching = !string.IsNullOrWhiteSpace(_searchText);
+            for (int i = 0; i < names.Length; i++)
+            {
+                var r = GetTabRect(i);
+                bool active = !searching && (int)_currentTab == i;
+                bool hover = r.Contains(mouse);
+                using var path = RoundRect(r, 8);
+                using var fill = new SolidBrush(active
+                    ? Color.FromArgb(180, Accent)
+                    : hover ? Color.FromArgb(60, AccentGlow)
+                            : Color.FromArgb(25, 255, 255, 255));
+                g.FillPath(fill, path);
+                using var border = new Pen(active ? AccentGlow : Color.FromArgb(40, AccentGlow), 1f);
+                g.DrawPath(border, path);
+                using var textBrush = new SolidBrush(active ? Color.White : TextMain);
+                var sf2 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString(names[i], _fontSmall, textBrush, r, sf2);
+            }
+            if (searching)
+            {
+                using var hint = new SolidBrush(Color.FromArgb(220, 255, 200, 80));
+                g.DrawString("🔎 \"" + _searchText + "\" (Esc)", _fontSmall, hint, 12, TabStripY + 20);
+            }
         }
 
         private void DrawGlassCard(Graphics g, Rectangle rect, int radius)
@@ -1112,7 +1376,46 @@ namespace CrosshairOverlay
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+
+            // Right-click on a slider = reset to default/mid (#77)
+            if (e.Button == MouseButtons.Right)
+            {
+                int idxR = HitTest(e.Location);
+                if (idxR >= 0 && idxR < _items.Count)
+                {
+                    var itR = _items[idxR];
+                    if (itR.Type == UiType.Slider || itR.Type == UiType.NumericInput)
+                    {
+                        int def = (itR.SliderMin + itR.SliderMax) / 2;
+                        if (itR.SliderMin == 0) def = 0; // for 0-based limits reset to 0
+                        itR.SliderValue = def;
+                        itR.OnSliderChanged?.Invoke(def);
+                        _overlay._needsStaticRender = true;
+                        _overlay.SaveSettings();
+                        Invalidate();
+                    }
+                }
+                return;
+            }
+
             if (e.Button != MouseButtons.Left) return;
+
+            // Tab strip click (#79 UI)
+            if (e.Y >= TabStripY && e.Y < HeaderHeight)
+            {
+                for (int i = 0; i < 6; i++)
+                {
+                    var r = GetTabRect(i);
+                    if (r.Contains(e.Location))
+                    {
+                        _currentTab = (Tab)i;
+                        _searchText = "";
+                        _scrollY = 0;
+                        BuildItems(); ComputeLayout(); Invalidate();
+                        return;
+                    }
+                }
+            }
 
             // Close button
             var closeBtnRect = new Rectangle(PanelWidth - 48, 14, 32, 32);
@@ -1267,10 +1570,88 @@ namespace CrosshairOverlay
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
+
+            // Wheel over slider => change its value (#76)
+            int idx = HitTest(e.Location);
+            if (idx >= 0 && idx < _items.Count)
+            {
+                var it = _items[idx];
+                if (it.Type == UiType.Slider || it.Type == UiType.NumericInput)
+                {
+                    int step = Math.Max(1, it.SliderStep) * (e.Delta > 0 ? 1 : -1);
+                    int nv = Math.Clamp(it.SliderValue + step, it.SliderMin, it.SliderMax);
+                    if (nv != it.SliderValue)
+                    {
+                        it.SliderValue = nv;
+                        it.OnSliderChanged?.Invoke(nv);
+                        _overlay._needsStaticRender = true;
+                        _overlay.SaveSettings();
+                        Invalidate();
+                    }
+                    return;
+                }
+            }
+
             int viewH = this.Height - HeaderHeight - 4;
             int maxScroll = Math.Max(0, _contentHeight - viewH);
             _scrollY = Math.Clamp(_scrollY - e.Delta / 2, 0, maxScroll);
             Invalidate();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            // Ctrl+F → start/focus search
+            if (keyData == (Keys.Control | Keys.F))
+            {
+                FocusSearch();
+                return true;
+            }
+            if (keyData == Keys.Escape)
+            {
+                if (!string.IsNullOrEmpty(_searchText))
+                {
+                    _searchText = "";
+                    _searchBox?.Hide();
+                    BuildItems(); ComputeLayout(); Invalidate();
+                    return true;
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void FocusSearch()
+        {
+            if (_searchBox == null)
+            {
+                _searchBox = new TextBox
+                {
+                    Location = new Point(10, TabStripY + 2),
+                    Size = new Size(PanelWidth - 60, 30),
+                    BackColor = Color.FromArgb(30, 15, 55),
+                    ForeColor = Color.White,
+                    Font = _fontControl,
+                    BorderStyle = BorderStyle.FixedSingle
+                };
+                _searchBox.TextChanged += (s, ev) =>
+                {
+                    _searchText = _searchBox!.Text;
+                    BuildItems(); ComputeLayout(); Invalidate();
+                };
+                _searchBox.KeyDown += (s, ev) =>
+                {
+                    if (ev.KeyCode == Keys.Escape)
+                    {
+                        _searchBox!.Text = "";
+                        _searchBox.Hide();
+                        ev.SuppressKeyPress = true;
+                    }
+                };
+                Controls.Add(_searchBox);
+            }
+            _searchBox.Show();
+            _searchBox.BringToFront();
+            _searchBox.Focus();
+            _searchBox.SelectAll();
         }
 
         protected override void OnMouseLeave(EventArgs e)

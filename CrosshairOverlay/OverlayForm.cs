@@ -115,12 +115,13 @@ namespace CrosshairOverlay
         {
             Cross, Circle, Dot, CrossWithCircle, Chevron, TShape, Diamond, Arrow, Plus,
             XShape, TriangleDown, Crosshairs, SquareBrackets, Wings,
+            DoubleCircle, DashedCross, TriangleUp, SerifCross,
             CustomImage
         }
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.2";
+        internal const string APP_VERSION = "2.1.3";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -200,6 +201,26 @@ namespace CrosshairOverlay
         internal float _hitMarkerSize = 12f;
         #endregion
 
+        #region v2.1.3 Extra Features
+        // #37 Anti-AFK — click every N seconds while no mouse activity detected
+        internal bool _antiAfkEnabled = false;
+        internal int _antiAfkSeconds = 60;
+        private DateTime _lastAntiAfkClick = DateTime.UtcNow;
+        private Point _lastAntiAfkPos;
+        // #40 Session click limit (0 = disabled)
+        internal int _sessionClickLimit = 0;
+        // #41 Session timer (minutes, 0 = disabled)
+        internal int _sessionTimerMin = 0;
+        private DateTime _sessionStartTime = DateTime.UtcNow;
+        // #57 Disable overlay in fullscreen apps
+        internal bool _hideInFullscreen = false;
+        private int _fullscreenCheckCounter = 0;
+        // #47 Jitter aim (small random mouse offsets while clicker running)
+        internal bool _jitterAim = false;
+        internal int _jitterAimPx = 2;
+        // #98 usage data — refreshed from UsageTracker
+        #endregion
+
         #region Animation State
         internal float _pulseScale = 1.0f;
         private float _dotPulseSine = 0f;
@@ -225,7 +246,8 @@ namespace CrosshairOverlay
             "", "Видимость", "Стиль", "Размер+", "Размер−",
             "Пульсация", "Прозрач.+", "Прозрач.−", "Цвет", "Сброс",
             "Автокликер", "Настройки", "Запись", "Повтор", "Галерея",
-            "Аварийный стоп", "Скриншот", "Burst"
+            "Аварийный стоп", "Скриншот", "Burst",
+            "Папка скриншотов", "Пресет +", "Пресет −", "Анти-AFK"
         };
         internal uint[] _hkMods = new uint[HOTKEY_COUNT + 1];
         internal uint[] _hkKeys = new uint[HOTKEY_COUNT + 1];
@@ -250,6 +272,10 @@ namespace CrosshairOverlay
             _hkMods[HK_SCREENSHOT] = CS;    _hkKeys[HK_SCREENSHOT] = 0x7B;    // F12
             _hkMods[HK_BURST_TOGGLE] = CS;  _hkKeys[HK_BURST_TOGGLE] = 0x42;  // B
             _hkMods[HK_EMERGENCY_STOP] = 0; _hkKeys[HK_EMERGENCY_STOP] = 0x1B; // Escape
+            _hkMods[HK_OPEN_SHOTS] = CS;    _hkKeys[HK_OPEN_SHOTS] = 0x4F;    // O — open shots folder
+            _hkMods[HK_PRESET_NEXT] = CS;   _hkKeys[HK_PRESET_NEXT] = 0xDD;   // ] — next preset
+            _hkMods[HK_PRESET_PREV] = CS;   _hkKeys[HK_PRESET_PREV] = 0xDB;   // [ — prev preset
+            _hkMods[HK_ANTI_AFK] = CS;      _hkKeys[HK_ANTI_AFK] = 0x4B;      // K — anti-afk
         }
 
         internal void ReRegisterHotkeys()
@@ -317,13 +343,16 @@ namespace CrosshairOverlay
         private const int HK_EMERGENCY_STOP = 15;
         private const int HK_SCREENSHOT = 16;
         private const int HK_BURST_TOGGLE = 17;
-        private const int HOTKEY_COUNT = 17;
+        private const int HK_OPEN_SHOTS = 18;
+        private const int HK_PRESET_NEXT = 19;
+        private const int HK_PRESET_PREV = 20;
+        private const int HK_ANTI_AFK = 21;
+        private const int HOTKEY_COUNT = 21;
         private const int MOD_NOREPEAT = 0x4000; // Prevent key repeat
         #endregion
 
-        internal static readonly string _settingsPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CrosshairOverlay", "settings_v3.json");
+        // Settings path — uses PortableMode (portable.flag next to exe -> store there).
+        internal static string _settingsPath => PortableMode.SettingsPath;
 
         private static readonly Color[] _colorPresets = {
             Color.FromArgb(0, 255, 0), Color.FromArgb(255, 0, 0), Color.FromArgb(0, 255, 255),
@@ -409,6 +438,7 @@ namespace CrosshairOverlay
             SaveSettings();
             _trayIcon.Visible = false; _trayIcon.Dispose();
             _customImageCache?.Dispose();
+            UsageTracker.Save();
             base.OnFormClosed(e);
         }
 
@@ -487,6 +517,22 @@ namespace CrosshairOverlay
                         SaveSettings();
                         _trayIcon?.ShowBalloonTip(1500, "Crosshair Overlay",
                             (Lang.IsRussian ? "Burst-режим: " : "Burst mode: ") + (_burstMode ? "ON" : "OFF"),
+                            ToolTipIcon.Info);
+                        break;
+                    case HK_OPEN_SHOTS:
+                        OpenScreenshotsFolder();
+                        break;
+                    case HK_PRESET_NEXT:
+                        CyclePreset(+1);
+                        break;
+                    case HK_PRESET_PREV:
+                        CyclePreset(-1);
+                        break;
+                    case HK_ANTI_AFK:
+                        _antiAfkEnabled = !_antiAfkEnabled;
+                        SaveSettings();
+                        _trayIcon?.ShowBalloonTip(1500, "Crosshair Overlay",
+                            (Lang.IsRussian ? "Анти-AFK: " : "Anti-AFK: ") + (_antiAfkEnabled ? "ON" : "OFF"),
                             ToolTipIcon.Info);
                         break;
                 }
@@ -569,6 +615,8 @@ namespace CrosshairOverlay
             {
                 if (_clickerRunning) return;
                 _clickerRunning = true;
+                _sessionStartTime = DateTime.UtcNow;
+                Interlocked.Exchange(ref _clickCounter, 0);
                 timeBeginPeriod(1);
 
                 // Single high-priority thread handles all clicks with an absolute-tick schedule.
@@ -827,6 +875,66 @@ namespace CrosshairOverlay
                 needsRender = true;
             }
 
+            // === v2.1.3 periodic checks (every ~200ms instead of every 16ms) ===
+            _fullscreenCheckCounter++;
+            if (_fullscreenCheckCounter >= 12) // 12 * 16ms ≈ 200ms
+            {
+                _fullscreenCheckCounter = 0;
+
+                // #57 Hide overlay if a fullscreen app is foreground
+                if (_hideInFullscreen)
+                {
+                    bool fs = FullscreenDetector.IsForegroundFullscreen();
+                    int desiredOpacity = fs ? 0 : _opacity;
+                    if (_targetOpacity != desiredOpacity)
+                    {
+                        _targetOpacity = desiredOpacity;
+                        needsRender = true;
+                    }
+                }
+
+                // #40/#41 Session limits (auto-stop clicker when exceeded)
+                if (_clickerRunning)
+                {
+                    if (_sessionClickLimit > 0 && GetClickCounter() >= _sessionClickLimit)
+                    {
+                        _autoClickerEnabled = false;
+                        UpdateClickerState();
+                        _trayIcon?.ShowBalloonTip(2500, "Crosshair Overlay",
+                            Lang.IsRussian ? "Лимит кликов достигнут — стоп" : "Click limit reached — stopped",
+                            ToolTipIcon.Info);
+                    }
+                    else if (_sessionTimerMin > 0 && (DateTime.UtcNow - _sessionStartTime).TotalMinutes >= _sessionTimerMin)
+                    {
+                        _autoClickerEnabled = false;
+                        UpdateClickerState();
+                        _trayIcon?.ShowBalloonTip(2500, "Crosshair Overlay",
+                            Lang.IsRussian ? "Таймер истёк — стоп" : "Timer expired — stopped",
+                            ToolTipIcon.Info);
+                    }
+                }
+
+                // #37 Anti-AFK: click once if no mouse activity for N seconds
+                if (_antiAfkEnabled)
+                {
+                    var p = Cursor.Position;
+                    if (p != _lastAntiAfkPos)
+                    {
+                        _lastAntiAfkPos = p;
+                        _lastAntiAfkClick = DateTime.UtcNow;
+                    }
+                    else if ((DateTime.UtcNow - _lastAntiAfkClick).TotalSeconds >= _antiAfkSeconds)
+                    {
+                        _lastAntiAfkClick = DateTime.UtcNow;
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+                    }
+                }
+
+                // #98 Usage tracker tick
+                UsageTracker.Tick(_clicksPerSecond, GetClickCounter());
+            }
+
             if (needsRender && _currentOpacity > 0.5f)
                 RenderOverlay();
         }
@@ -1010,6 +1118,19 @@ namespace CrosshairOverlay
                     break;
                 case CrosshairStyle.Wings:
                     DrawWings(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.DoubleCircle:
+                    DrawCircleStyle(g, cx, cy, s, t, ow, brush, outlineBrush);
+                    DrawCircleStyle(g, cx, cy, s * 0.55f, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.DashedCross:
+                    DrawDashedCross(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.TriangleUp:
+                    DrawTriangleUp(g, cx, cy, s, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.SerifCross:
+                    DrawSerifCross(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
                     break;
                 case CrosshairStyle.CustomImage:
                     if (_customImageCache != null)
@@ -1201,7 +1322,107 @@ namespace CrosshairOverlay
             }
         }
 
+        // #2 Dashed cross
+        private void DrawDashedCross(Graphics g, int cx, int cy, float s, float gap, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float[] dash = { 3f, 2f };
+            var lines = new (PointF a, PointF b)[]
+            {
+                (new(cx, cy - s),   new(cx, cy - gap)),
+                (new(cx, cy + gap), new(cx, cy + s)),
+                (new(cx - s, cy),   new(cx - gap, cy)),
+                (new(cx + gap, cy), new(cx + s, cy)),
+            };
+            foreach (var (a, b) in lines)
+            {
+                if (outlineBrush != null)
+                {
+                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    op.DashPattern = dash;
+                    g.DrawLine(op, a, b);
+                }
+                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                p.DashPattern = dash;
+                g.DrawLine(p, a, b);
+            }
+        }
+
+        // #7 Triangle up
+        private void DrawTriangleUp(Graphics g, int cx, int cy, float s, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            float half = s * 0.9f;
+            var pts = new PointF[] { new(cx - half, cy + half * 0.5f), new(cx, cy - half * 0.7f), new(cx + half, cy + half * 0.5f), new(cx - half, cy + half * 0.5f) };
+            if (outlineBrush != null)
+            {
+                using var op = new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLines(op, pts);
+            }
+            using var pen = new Pen(brush, t) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLines(pen, pts);
+        }
+
+        // #8 Serif cross (cross with small perpendicular caps on each end)
+        private void DrawSerifCross(Graphics g, int cx, int cy, float s, float gap, float t, float ow,
+            Brush brush, SolidBrush? outlineBrush)
+        {
+            // Main cross lines
+            DrawCrossLines(g, cx, cy, s, gap, t, ow, brush, outlineBrush, false);
+            // Serifs: small perpendicular bars at each tip
+            float cap = Math.Max(3, s * 0.25f);
+            var serifs = new (PointF a, PointF b)[]
+            {
+                (new(cx - cap, cy - s), new(cx + cap, cy - s)), // top
+                (new(cx - cap, cy + s), new(cx + cap, cy + s)), // bottom
+                (new(cx - s, cy - cap), new(cx - s, cy + cap)), // left
+                (new(cx + s, cy - cap), new(cx + s, cy + cap)), // right
+            };
+            foreach (var (a, b) in serifs)
+            {
+                if (outlineBrush != null)
+                {
+                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    g.DrawLine(op, a, b);
+                }
+                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(p, a, b);
+            }
+        }
+
         #endregion
+
+        #endregion
+
+        #region v2.1.3 Helper Methods
+
+        // #64 Open screenshots folder
+        internal void OpenScreenshotsFolder()
+        {
+            string baseDir = !string.IsNullOrWhiteSpace(_recorder.OutputDir)
+                ? _recorder.OutputDir!
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "CrosshairOverlay");
+            string dir = Path.Combine(baseDir, "screenshots");
+            ShellHelper.OpenFolder(dir);
+        }
+
+        // #51 Cycle through crosshair styles by +1/-1 (excluding CustomImage unless an image is loaded)
+        internal void CyclePreset(int direction)
+        {
+            int styleCount = Enum.GetValues(typeof(CrosshairStyle)).Length;
+            int maxIdx = _customImageCache != null ? styleCount - 1 : styleCount - 2;
+            int next = ((int)_style + direction);
+            while (next < 0) next += (maxIdx + 1);
+            next = next % (maxIdx + 1);
+            _style = (CrosshairStyle)next;
+            _needsStaticRender = true;
+            SaveSettings();
+            _trayIcon?.ShowBalloonTip(1200, "Crosshair Overlay",
+                (Lang.IsRussian ? "Стиль: " : "Style: ") + _style, ToolTipIcon.Info);
+        }
+
+        // Count of styles (for UI) including CustomImage
+        internal static int StyleCount => Enum.GetValues(typeof(CrosshairStyle)).Length;
 
         #endregion
 
@@ -1448,7 +1669,17 @@ namespace CrosshairOverlay
                     // Hotkeys
                     HkMods = _hkMods.Skip(1).Select(v => (int)v).ToArray(),
                     HkKeys = _hkKeys.Skip(1).Select(v => (int)v).ToArray(),
-                    LanguageRu = Lang.IsRussian
+                    LanguageRu = Lang.IsRussian,
+                    // v2.1.3 extras
+                    AntiAfkEnabled = _antiAfkEnabled,
+                    AntiAfkSeconds = _antiAfkSeconds,
+                    SessionClickLimit = _sessionClickLimit,
+                    SessionTimerMin = _sessionTimerMin,
+                    HideInFullscreen = _hideInFullscreen,
+                    JitterAim = _jitterAim,
+                    JitterAimPx = _jitterAimPx,
+                    UiTheme = (int)UiThemePresets.Current,
+                    ColorTheme = SettingsForm._currentTheme
                 };
                 File.WriteAllText(_settingsPath, JsonSerializer.Serialize(data));
             }
@@ -1530,6 +1761,16 @@ namespace CrosshairOverlay
                     }
                 }
                 Lang.IsRussian = data.LanguageRu;
+                // v2.1.3 extras
+                _antiAfkEnabled = data.AntiAfkEnabled;
+                _antiAfkSeconds = Math.Clamp(data.AntiAfkSeconds, 5, 3600);
+                _sessionClickLimit = Math.Max(0, data.SessionClickLimit);
+                _sessionTimerMin = Math.Max(0, data.SessionTimerMin);
+                _hideInFullscreen = data.HideInFullscreen;
+                _jitterAim = data.JitterAim;
+                _jitterAimPx = Math.Clamp(data.JitterAimPx, 1, 20);
+                UiThemePresets.Current = (UiThemePresets.Preset)Math.Clamp(data.UiTheme, 0, 3);
+                SettingsForm._currentTheme = Math.Clamp(data.ColorTheme, 0, 7);
             }
             catch { }
         }
@@ -1602,6 +1843,16 @@ namespace CrosshairOverlay
             public int[]? HkMods { get; set; }
             public int[]? HkKeys { get; set; }
             public bool LanguageRu { get; set; } = true;
+            // v2.1.3 new fields
+            public bool AntiAfkEnabled { get; set; }
+            public int AntiAfkSeconds { get; set; } = 60;
+            public int SessionClickLimit { get; set; }
+            public int SessionTimerMin { get; set; }
+            public bool HideInFullscreen { get; set; }
+            public bool JitterAim { get; set; }
+            public int JitterAimPx { get; set; } = 2;
+            public int UiTheme { get; set; }
+            public int ColorTheme { get; set; }
         }
 
         #endregion

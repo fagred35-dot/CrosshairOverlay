@@ -175,7 +175,11 @@ namespace CrosshairOverlay
             Get("Галерея", "Gallery"),
             Get("Аварийный стоп", "Emergency stop"),
             Get("Скриншот", "Screenshot"),
-            Get("Burst", "Burst")
+            Get("Burst", "Burst"),
+            Get("Папка скриншотов", "Shots folder"),
+            Get("Пресет +", "Preset +"),
+            Get("Пресет −", "Preset −"),
+            Get("Анти-AFK", "Anti-AFK")
         };
 
         // ── HOTKEY CAPTURE FORM ──
