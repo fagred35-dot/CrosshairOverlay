@@ -55,6 +55,7 @@ namespace CrosshairOverlay
         internal static string GalleryStandard => Get("Стандарт", "Standard");
         internal static string GalleryCommunity => Get("Сообщество", "Community");
         internal static string GalleryAdd => Get("Добавить", "Add");
+        internal static string GalleryPresets => Get("Пресеты (200+)", "Presets (200+)");
 
         // ── AUTOCLICKER ──
         internal static string SectionAutoclicker => Get("──  АВТОКЛИКЕР  ──", "──  AUTOCLICKER  ──");
@@ -171,7 +172,10 @@ namespace CrosshairOverlay
             Get("Настройки", "Settings"),
             Get("Запись", "Record"),
             Get("Повтор", "Replay"),
-            Get("Галерея", "Gallery")
+            Get("Галерея", "Gallery"),
+            Get("Аварийный стоп", "Emergency stop"),
+            Get("Скриншот", "Screenshot"),
+            Get("Burst", "Burst")
         };
 
         // ── HOTKEY CAPTURE FORM ──

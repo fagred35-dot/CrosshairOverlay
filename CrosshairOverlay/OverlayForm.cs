@@ -87,6 +87,14 @@ namespace CrosshairOverlay
         [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint uPeriod);
         [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint uPeriod);
         [DllImport("user32.dll")] private static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, IntPtr dwExtraInfo);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool DestroyIcon(IntPtr hIcon);
+        [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
+        [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr hdcDest, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
+        private const int SM_XVIRTUALSCREEN = 76;
+        private const int SM_YVIRTUALSCREEN = 77;
+        private const int SM_CXVIRTUALSCREEN = 78;
+        private const int SM_CYVIRTUALSCREEN = 79;
+        private const int SRCCOPY = 0x00CC0020;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MSLLHOOKSTRUCT
@@ -112,7 +120,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.0.0";
+        internal const string APP_VERSION = "2.1.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -174,6 +182,14 @@ namespace CrosshairOverlay
         internal bool _randomDelay = false;
         internal int _randomDelayPercent = 20;
         internal long _clickCounter = 0;
+        // Burst mode: when enabled and _clickOnHold, fires exactly _burstCount clicks per LMB press then waits for release.
+        internal bool _burstMode = false;
+        internal int _burstCount = 3;
+        private int _burstRemaining = 0;
+        private bool _burstLastLmbState = false;
+        // Accessor avoids CS1690 when callers read field via the Form reference.
+        internal long GetClickCounter() => Interlocked.Read(ref _clickCounter);
+        internal void ResetClickCounter() => Interlocked.Exchange(ref _clickCounter, 0);
         #endregion
 
         #region Visual Effects
@@ -187,7 +203,6 @@ namespace CrosshairOverlay
 
         #region Animation State
         internal float _pulseScale = 1.0f;
-        private bool _pulseActive = false;
         private float _dotPulseSine = 0f;
         private float _hue = 0f;
         internal float _dynamicSpread = 0f;
@@ -210,7 +225,8 @@ namespace CrosshairOverlay
         internal static readonly string[] HotkeyNames = {
             "", "Видимость", "Стиль", "Размер+", "Размер−",
             "Пульсация", "Прозрач.+", "Прозрач.−", "Цвет", "Сброс",
-            "Автокликер", "Настройки", "Запись", "Повтор", "Галерея"
+            "Автокликер", "Настройки", "Запись", "Повтор", "Галерея",
+            "Аварийный стоп", "Скриншот", "Burst"
         };
         internal uint[] _hkMods = new uint[HOTKEY_COUNT + 1];
         internal uint[] _hkKeys = new uint[HOTKEY_COUNT + 1];
@@ -232,6 +248,8 @@ namespace CrosshairOverlay
             _hkMods[HK_RECORD] = CS;       _hkKeys[HK_RECORD] = 0x78;       // F9
             _hkMods[HK_REPLAY_SAVE] = CS;  _hkKeys[HK_REPLAY_SAVE] = 0x79;  // F10
             _hkMods[HK_GALLERY] = CS;      _hkKeys[HK_GALLERY] = 0x47;      // G
+            _hkMods[HK_SCREENSHOT] = CS;    _hkKeys[HK_SCREENSHOT] = 0x7B;    // F12
+            _hkMods[HK_BURST_TOGGLE] = CS;  _hkKeys[HK_BURST_TOGGLE] = 0x42;  // B
             _hkMods[HK_EMERGENCY_STOP] = 0; _hkKeys[HK_EMERGENCY_STOP] = 0x1B; // Escape
         }
 
@@ -298,7 +316,9 @@ namespace CrosshairOverlay
         private const int HK_REPLAY_SAVE = 13;
         private const int HK_GALLERY = 14;
         private const int HK_EMERGENCY_STOP = 15;
-        private const int HOTKEY_COUNT = 15;
+        private const int HK_SCREENSHOT = 16;
+        private const int HK_BURST_TOGGLE = 17;
+        private const int HOTKEY_COUNT = 17;
         private const int MOD_NOREPEAT = 0x4000; // Prevent key repeat
         #endregion
 
@@ -420,7 +440,6 @@ namespace CrosshairOverlay
                         _needsStaticRender = true;
                         break;
                     case HK_PULSE:
-                        _pulseActive = true;
                         _pulseScale = 1.6f;
                         break;
                     case HK_OPACITY_UP:
@@ -460,6 +479,16 @@ namespace CrosshairOverlay
                             if (_settingsForm != null && !_settingsForm.IsDisposed)
                                 _settingsForm.UpdateClickerStatus();
                         }
+                        break;
+                    case HK_SCREENSHOT:
+                        TakeScreenshot();
+                        break;
+                    case HK_BURST_TOGGLE:
+                        _burstMode = !_burstMode;
+                        SaveSettings();
+                        _trayIcon?.ShowBalloonTip(1500, "Crosshair Overlay",
+                            (Lang.IsRussian ? "Burst-режим: " : "Burst mode: ") + (_burstMode ? "ON" : "OFF"),
+                            ToolTipIcon.Info);
                         break;
                 }
             }
@@ -571,8 +600,26 @@ namespace CrosshairOverlay
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
+                    // Reset burst armer so the next press starts fresh
+                    if (_burstMode) { _burstLastLmbState = false; _burstRemaining = 0; }
                     Thread.Sleep(1);
                     continue;
+                }
+
+                // Burst mode: fire exactly _burstCount clicks per LMB press, then wait for release.
+                if (_clickOnHold && _burstMode)
+                {
+                    if (!_burstLastLmbState)
+                    {
+                        _burstLastLmbState = true;
+                        Interlocked.Exchange(ref _burstRemaining, Math.Max(1, _burstCount));
+                    }
+                    if (Interlocked.Decrement(ref _burstRemaining) < 0)
+                    {
+                        // Already fired the requested amount — idle until button released.
+                        Thread.Sleep(1);
+                        continue;
+                    }
                 }
 
                 int cps = _clicksPerSecond;
@@ -626,6 +673,49 @@ namespace CrosshairOverlay
 
         #endregion
 
+        #region Screenshot
+
+        internal void TakeScreenshot()
+        {
+            try
+            {
+                int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                if (w <= 0 || h <= 0) { w = Screen.PrimaryScreen!.Bounds.Width; h = Screen.PrimaryScreen!.Bounds.Height; x = 0; y = 0; }
+
+                using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    IntPtr dst = g.GetHdc();
+                    IntPtr src = GetDC(IntPtr.Zero);
+                    try { BitBlt(dst, 0, 0, w, h, src, x, y, SRCCOPY); }
+                    finally { ReleaseDC(IntPtr.Zero, src); g.ReleaseHdc(dst); }
+                }
+
+                string baseDir = !string.IsNullOrWhiteSpace(_recorder.OutputDir)
+                    ? _recorder.OutputDir!
+                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "CrosshairOverlay");
+                string dir = Path.Combine(baseDir, "screenshots");
+                Directory.CreateDirectory(dir);
+                string file = Path.Combine(dir, $"shot_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png");
+                bmp.Save(file, ImageFormat.Png);
+
+                _trayIcon?.ShowBalloonTip(2500, "Crosshair Overlay",
+                    (Lang.IsRussian ? "Скриншот сохранён: " : "Screenshot saved: ") + Path.GetFileName(file),
+                    ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                _trayIcon?.ShowBalloonTip(3000, "Crosshair Overlay",
+                    (Lang.IsRussian ? "Ошибка скриншота: " : "Screenshot error: ") + ex.Message,
+                    ToolTipIcon.Error);
+            }
+        }
+
+        #endregion
+
         #region Animation Loop
 
         private void AnimTimer_Tick(object? sender, EventArgs e)
@@ -661,7 +751,7 @@ namespace CrosshairOverlay
             if (_pulseScale > 1.005f)
             {
                 _pulseScale += (1.0f - _pulseScale) * 0.12f;
-                if (_pulseScale <= 1.005f) { _pulseScale = 1.0f; _pulseActive = false; }
+                if (_pulseScale <= 1.005f) _pulseScale = 1.0f;
                 needsRender = true;
             }
 
@@ -1117,7 +1207,11 @@ namespace CrosshairOverlay
             using var pen = new Pen(_crossColor, 2);
             g.DrawLine(pen, 8, 2, 8, 14);
             g.DrawLine(pen, 2, 8, 14, 8);
-            return Icon.FromHandle(bmp.GetHicon());
+            IntPtr h = bmp.GetHicon();
+            // Clone into a managed Icon so we can destroy the native handle immediately (avoids GDI leak)
+            using var tmp = Icon.FromHandle(h);
+            try { return (Icon)tmp.Clone(); }
+            finally { DestroyIcon(h); }
         }
 
         internal void OpenSettings()
@@ -1297,6 +1391,8 @@ namespace CrosshairOverlay
                     RightClickMode = _rightClickMode,
                     RandomDelay = _randomDelay,
                     RandomDelayPercent = _randomDelayPercent,
+                    BurstMode = _burstMode,
+                    BurstCount = _burstCount,
 
                     DynamicCrosshair = _dynamicCrosshair,
                     DynamicMaxSpread = _dynamicMaxSpread,
@@ -1336,7 +1432,8 @@ namespace CrosshairOverlay
                 var data = JsonSerializer.Deserialize<SettingsData>(File.ReadAllText(_settingsPath));
                 if (data == null) return;
 
-                _style = (CrosshairStyle)Math.Clamp(data.Style, 0, 9);
+                int _styleMax = Enum.GetValues(typeof(CrosshairStyle)).Length - 1;
+                _style = (CrosshairStyle)Math.Clamp(data.Style, 0, _styleMax);
                 _size = Math.Clamp(data.Size, 4, 100);
                 _thickness = Math.Clamp(data.Thickness, 1, 10);
                 _gap = Math.Clamp(data.Gap, 0, 30);
@@ -1367,6 +1464,8 @@ namespace CrosshairOverlay
                 _rightClickMode = data.RightClickMode;
                 _randomDelay = data.RandomDelay;
                 _randomDelayPercent = Math.Clamp(data.RandomDelayPercent, 5, 50);
+                _burstMode = data.BurstMode;
+                _burstCount = Math.Clamp(data.BurstCount, 1, 50);
 
                 _dynamicCrosshair = data.DynamicCrosshair;
                 _dynamicMaxSpread = Math.Clamp(data.DynamicMaxSpread, 1f, 30f);
@@ -1389,10 +1488,11 @@ namespace CrosshairOverlay
                 _notifPosition = Math.Clamp(data.NotifPosition, 0, 3);
                 _audioApps = data.AudioApps ?? new();
                 // Hotkeys
-                if (data.HkMods != null && data.HkKeys != null
-                    && data.HkMods.Length >= HOTKEY_COUNT && data.HkKeys.Length >= HOTKEY_COUNT)
+                if (data.HkMods != null && data.HkKeys != null)
                 {
-                    for (int i = 0; i < HOTKEY_COUNT; i++)
+                    // Copy as many saved hotkeys as we can; keep defaults for any new hotkeys
+                    int n = Math.Min(HOTKEY_COUNT, Math.Min(data.HkMods.Length, data.HkKeys.Length));
+                    for (int i = 0; i < n; i++)
                     {
                         _hkMods[i + 1] = (uint)data.HkMods[i];
                         _hkKeys[i + 1] = (uint)data.HkKeys[i];
@@ -1440,6 +1540,8 @@ namespace CrosshairOverlay
             public int ClicksPerSecond { get; set; } = 30;
             public bool ClickOnHold { get; set; } = true;
             public bool RightClickMode { get; set; }
+            public bool BurstMode { get; set; }
+            public int BurstCount { get; set; } = 3;
             public bool RandomDelay { get; set; }
             public int RandomDelayPercent { get; set; } = 20;
             public bool UseSendInput { get; set; } = true;

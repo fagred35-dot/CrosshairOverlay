@@ -72,9 +72,11 @@ namespace CrosshairOverlay
         private readonly StringFormat _sfCenter = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         private readonly StringFormat _sfTrim = new() { Trimming = StringTrimming.EllipsisCharacter };
 
-        // Content bitmap cache
+        // Content bitmap cache (reserved for future incremental redraw optimization)
+#pragma warning disable CS0649, CS0414
         private Bitmap? _contentCache;
         private bool _contentDirty = true;
+#pragma warning restore CS0649, CS0414
 
         private class VideoEntry
         {

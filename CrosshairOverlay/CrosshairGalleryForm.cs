@@ -12,7 +12,6 @@ namespace CrosshairOverlay
         private int _hoverIndex = -1;
         private int _scrollY = 0;
         private int _contentHeight = 0;
-        private bool _draggingScrollbar = false;
 
         // Community images
         private readonly System.Collections.Generic.List<string> _communityImages = new();
@@ -27,6 +26,9 @@ namespace CrosshairOverlay
         private const int PadX = 20;
         private const int PadTop = 20;
         private const int SectionH = 36;
+
+        // Hit-test index ranges (so sections can grow without collisions)
+        private const int PresetIndexBase = 2000;
 
         // Standard styles (all except CustomImage)
         private static readonly OverlayForm.CrosshairStyle[] StandardStyles =
@@ -141,6 +143,24 @@ namespace CrosshairOverlay
                 }
             }
 
+            // Presets section
+            curY = comEndY + SectionH;
+            int preCount = CrosshairPresets.All.Count;
+            int preRows = (preCount + Cols - 1) / Cols;
+            int preEndY = curY + preRows * (CardSize + CardGap);
+
+            if (ly >= curY && ly < preEndY)
+            {
+                int row = (ly - curY) / (CardSize + CardGap);
+                int col = (x - PadX) / (CardSize + CardGap);
+                if (col >= 0 && col < Cols && x >= PadX && x < PadX + Cols * (CardSize + CardGap))
+                {
+                    int idx = row * Cols + col;
+                    if (idx < preCount)
+                        return PresetIndexBase + idx;
+                }
+            }
+
             return -1;
         }
 
@@ -233,6 +253,30 @@ namespace CrosshairOverlay
 
             int comRows = (comCount + Cols - 1) / Cols;
             curY += comRows * (CardSize + CardGap);
+
+            // ── PRESETS SECTION ──
+            g.DrawString(Lang.GalleryPresets, _fontSection, secBrush, PadX, curY + 4);
+            curY += SectionH;
+
+            var presets = CrosshairPresets.All;
+            for (int i = 0; i < presets.Count; i++)
+            {
+                int row = i / Cols, col = i % Cols;
+                int cx = PadX + col * (CardSize + CardGap);
+                int cy = curY + row * (CardSize + CardGap);
+                int globalIdx = PresetIndexBase + i;
+                bool hover = _hoverIndex == globalIdx;
+                bool selected = CrosshairPresets.Matches(_overlay, presets[i]);
+                DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
+                DrawPresetPreview(g, cx, cy, CardSize, presets[i]);
+                using var lblBrush4 = new SolidBrush(selected ? Color.White : Color.FromArgb(170, 180, 170, 210));
+                var sf5 = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+                var labelRect = new RectangleF(cx + 2, cy + CardSize - 14, CardSize - 4, 12);
+                g.DrawString(presets[i].Name, _fontLabel, lblBrush4, labelRect, sf5);
+            }
+
+            int preRows = (presets.Count + Cols - 1) / Cols;
+            curY += preRows * (CardSize + CardGap);
             _contentHeight = curY + PadTop;
 
             g.ResetTransform();
@@ -485,6 +529,85 @@ namespace CrosshairOverlay
             }
         }
 
+        private void DrawPresetPreview(Graphics g, int x, int y, int cardSize, CrosshairPresets.Preset p)
+        {
+            int cx = x + cardSize / 2;
+            int cy = y + cardSize / 2 - 4;
+            // Scale preset size into ~16-22px visible range
+            float s = Math.Clamp(p.Size * 0.75f, 8f, 22f);
+            float gap = Math.Max(1f, p.Gap * 0.7f);
+            float t = Math.Clamp(p.Thickness, 1, 4);
+            float ow = p.ShowOutline ? p.OutlineWidth : 0f;
+
+            using var brush = new SolidBrush(Color.FromArgb(235, p.Color));
+            using var outBrush = new SolidBrush(Color.FromArgb(200, p.OutlineColor));
+
+            // Optional glow halo
+            if (p.GlowEnabled)
+            {
+                using var glow = new SolidBrush(Color.FromArgb(Math.Min(100, p.GlowAlpha), p.Color));
+                int gs = (int)(s + p.GlowSize * 0.7f);
+                g.FillEllipse(glow, cx - gs, cy - gs, gs * 2, gs * 2);
+            }
+
+            switch (p.Style)
+            {
+                case OverlayForm.CrosshairStyle.Cross:
+                case OverlayForm.CrosshairStyle.Plus:
+                    DrawPreviewCross(g, cx, cy, s, gap, t, ow, brush, outBrush, false);
+                    break;
+                case OverlayForm.CrosshairStyle.TShape:
+                    DrawPreviewCross(g, cx, cy, s, gap, t, ow, brush, outBrush, true);
+                    break;
+                case OverlayForm.CrosshairStyle.Circle:
+                    DrawPreviewCircle(g, cx, cy, s * 0.85f, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.CrossWithCircle:
+                    DrawPreviewCross(g, cx, cy, s, gap, t, ow, brush, outBrush, false);
+                    DrawPreviewCircle(g, cx, cy, s * 0.9f, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.Dot:
+                    {
+                        float r = Math.Max(3f, p.DotSize + s * 0.1f);
+                        g.FillEllipse(outBrush, cx - r - 1, cy - r - 1, (r + 1) * 2, (r + 1) * 2);
+                        g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
+                    }
+                    break;
+                case OverlayForm.CrosshairStyle.Chevron:
+                    DrawPreviewChevron(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.Diamond:
+                    DrawPreviewDiamond(g, cx, cy, s, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.Arrow:
+                    DrawPreviewArrow(g, cx, cy, s, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.XShape:
+                    DrawPreviewX(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.TriangleDown:
+                    DrawPreviewTriangleDown(g, cx, cy, s, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.Crosshairs:
+                    DrawPreviewCross(g, cx, cy, s, gap, t, ow, brush, outBrush, false);
+                    DrawPreviewCircle(g, cx, cy, s * 0.9f, t, ow, brush, outBrush);
+                    g.FillEllipse(brush, cx - 2, cy - 2, 4, 4);
+                    break;
+                case OverlayForm.CrosshairStyle.SquareBrackets:
+                    DrawPreviewBrackets(g, cx, cy, s * 0.85f, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.Wings:
+                    DrawPreviewWings(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+            }
+
+            if (p.ShowDot && p.Style != OverlayForm.CrosshairStyle.Dot)
+            {
+                float r = Math.Max(1.5f, p.DotSize);
+                g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
+            }
+        }
+
         #endregion
 
         #region Mouse Handling
@@ -517,6 +640,18 @@ namespace CrosshairOverlay
             }
 
             if (_hoverIndex < 0) return;
+
+            if (_hoverIndex >= PresetIndexBase)
+            {
+                int presetIdx = _hoverIndex - PresetIndexBase;
+                var presets = CrosshairPresets.All;
+                if (presetIdx >= 0 && presetIdx < presets.Count)
+                {
+                    CrosshairPresets.Apply(_overlay, presets[presetIdx]);
+                    Invalidate();
+                }
+                return;
+            }
 
             if (_hoverIndex < StandardStyles.Length)
             {

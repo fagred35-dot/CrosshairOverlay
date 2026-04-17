@@ -282,7 +282,7 @@ namespace CrosshairOverlay
                 Lang.SpreadPercentTooltip);
 
             AddInfo(Lang.ClickCounter,
-                _overlay._clickCounter.ToString("N0"),
+                _overlay.GetClickCounter().ToString("N0"),
                 AccentGlow,
                 Lang.ClickCounterTooltip);
             AddInfo(Lang.HotkeyLabel,
@@ -603,7 +603,7 @@ namespace CrosshairOverlay
             foreach (var item in _items)
             {
                 if (item.Type == UiType.Info && item.Label == Lang.ClickCounter)
-                    item.InfoValue = _overlay._clickCounter.ToString("N0");
+                    item.InfoValue = _overlay.GetClickCounter().ToString("N0");
             }
 
             // Draw items
