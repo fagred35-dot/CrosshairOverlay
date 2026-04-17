@@ -139,6 +139,7 @@ namespace CrosshairOverlay
             public string InfoValue = "";
             public Color InfoColor = TextMain;
             public bool IsThemeSelector; // true = draw gradient swatches instead of text
+            public Color[][]? GradientPalette; // override for swatch colors (null = use ThemeGradients)
         }
 
         public SettingsForm(OverlayForm overlay)
@@ -296,7 +297,7 @@ namespace CrosshairOverlay
                 OnStyleChanged = v => ApplyTheme(v)
             });
 
-            // ── UI THEME (Dark/Light/OLED/Neon) ──
+            // ── UI THEME (Dark/Light/OLED/Neon) — gradient swatches ──
             _items.Add(new UiItem
             {
                 Type = UiType.StyleSelector,
@@ -305,6 +306,14 @@ namespace CrosshairOverlay
                 Height = 50,
                 SelectedStyle = (int)UiThemePresets.Current,
                 StyleNames = new[] { "Dark", "Light", "OLED", "Neon" },
+                IsThemeSelector = true,
+                GradientPalette = new[]
+                {
+                    new[] { Color.FromArgb(36, 30, 54),   Color.FromArgb(78, 60, 128)  }, // Dark
+                    new[] { Color.FromArgb(245, 245, 250),Color.FromArgb(200, 205, 215)}, // Light
+                    new[] { Color.FromArgb(0, 0, 0),      Color.FromArgb(30, 30, 38)   }, // OLED
+                    new[] { Color.FromArgb(255, 0, 170),  Color.FromArgb(0, 220, 255)  }, // Neon
+                },
                 OnStyleChanged = v =>
                 {
                     UiThemePresets.Current = (UiThemePresets.Preset)v;
@@ -380,15 +389,20 @@ namespace CrosshairOverlay
                 v => { _overlay._autoClickerEnabled = v; _overlay.UpdateClickerState(); },
                 Lang.EnableAutoclickerTooltip);
             AddToggle(Lang.HoldMode, _overlay._clickOnHold, v => _overlay._clickOnHold = v, Lang.HoldModeTooltip);
-            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 5, 1000, 5,
-                v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); }, Lang.ClicksPerSecTooltip);
+            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 1, 60, 1,
+                v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); },
+                Lang.IsRussian ? "Обычный автокликер (до 60 кпс)" : "Regular autoclicker (up to 60 CPS)");
             AddToggle(Lang.RightClick, _overlay._rightClickMode, v => _overlay._rightClickMode = v, Lang.RightClickTooltip);
             AddToggle(Lang.RandomDelay, _overlay._randomDelay, v => _overlay._randomDelay = v, Lang.RandomDelayTooltip);
             AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5, v => _overlay._randomDelayPercent = v, Lang.SpreadPercentTooltip);
+            AddSpacer();
+
+            // Burst (batched — high speed, low CPU)
+            AddSection(Lang.IsRussian ? "──  BURST (доп. клики)  ──" : "──  BURST (extra clicks)  ──");
             AddToggle(Lang.IsRussian ? "Burst режим" : "Burst mode", _overlay._burstMode, v => _overlay._burstMode = v,
-                Lang.IsRussian ? "Выстрел ровно N кликов при нажатии ЛКМ" : "Fire N clicks per LMB press");
-            AddSlider(Lang.IsRussian ? "Кликов в Burst" : "Burst count", _overlay._burstCount, 1, 50, 1, v => _overlay._burstCount = v,
-                Lang.IsRussian ? "Сколько кликов за одно нажатие" : "Clicks per press");
+                Lang.IsRussian ? "Доп. быстрые клики (пакетная отправка, без нагрузки на ПК)" : "Extra fast clicks (batched, no CPU load)");
+            AddSlider(Lang.IsRussian ? "Кликов в Burst" : "Burst count", _overlay._burstCount, 1, 200, 1, v => _overlay._burstCount = v,
+                Lang.IsRussian ? "Сколько кликов за одно нажатие ЛКМ" : "Clicks per single LMB press");
             AddSpacer();
 
             // Session limits (#40, #41)
@@ -582,19 +596,41 @@ namespace CrosshairOverlay
         private void ShowAchievements()
         {
             var u = UsageTracker.Current;
-            var ach = new System.Text.StringBuilder();
-            ach.AppendLine(Lang.IsRussian ? "🏆 ДОСТИЖЕНИЯ" : "🏆 ACHIEVEMENTS");
-            ach.AppendLine();
-            void A(string name, bool unlocked) => ach.AppendLine((unlocked ? "✔ " : "✗ ") + name);
-            A(Lang.IsRussian ? "Первый запуск" : "First launch", true);
-            A(Lang.IsRussian ? "10 000 кликов" : "10K clicks", u.TotalClicks >= 10000);
-            A(Lang.IsRussian ? "100 000 кликов" : "100K clicks", u.TotalClicks >= 100000);
-            A(Lang.IsRussian ? "1 миллион кликов" : "1M clicks", u.TotalClicks >= 1000000);
-            A(Lang.IsRussian ? "1 час использования" : "1 hour active", u.SecondsTotal >= 3600);
-            A(Lang.IsRussian ? "10 часов использования" : "10 hours active", u.SecondsTotal >= 36000);
-            A(Lang.IsRussian ? "Стрик 7 дней" : "7-day streak", u.StreakDays >= 7);
-            A(Lang.IsRussian ? "500+ CPS" : "500+ CPS", u.MaxCps >= 500);
-            MessageBox.Show(this, ach.ToString(), "Achievements");
+            var list = new System.Collections.Generic.List<AchievementsForm.Achievement>();
+            void A(string icon, string name, string desc, bool unlocked, double progress) =>
+                list.Add(new AchievementsForm.Achievement
+                    { Icon = icon, Name = name, Desc = desc, Unlocked = unlocked, Progress = Math.Clamp(progress, 0, 1) });
+
+            bool ru = Lang.IsRussian;
+            A("🎯", ru ? "Первый запуск" : "First launch",
+                ru ? "Открыл программу" : "Opened the app", true, 1.0);
+            A("🖱", ru ? "10 000 кликов" : "10K clicks",
+                ru ? "Всего ЛКМ" : "Total LMB", u.TotalClicks >= 10000, u.TotalClicks / 10000.0);
+            A("💥", ru ? "100 000 кликов" : "100K clicks",
+                ru ? "Настоящий энтузиаст" : "True enthusiast", u.TotalClicks >= 100000, u.TotalClicks / 100000.0);
+            A("🏅", ru ? "1 миллион кликов" : "1M clicks",
+                ru ? "Легенда автокликера" : "Autoclicker legend", u.TotalClicks >= 1000000, u.TotalClicks / 1000000.0);
+            A("⏱", ru ? "1 час использования" : "1 hour active",
+                ru ? "60 минут с прицелом" : "60 min with crosshair", u.SecondsTotal >= 3600, u.SecondsTotal / 3600.0);
+            A("🕰", ru ? "10 часов" : "10 hours",
+                ru ? "Время идёт…" : "Time flies…", u.SecondsTotal >= 36000, u.SecondsTotal / 36000.0);
+            A("🔥", ru ? "Стрик 7 дней" : "7-day streak",
+                ru ? "Заходил 7 дней подряд" : "Entered 7 days in a row", u.StreakDays >= 7, u.StreakDays / 7.0);
+            A("⚡", ru ? "500+ CPS" : "500+ CPS",
+                ru ? "Пиковая скорость" : "Peak speed", u.MaxCps >= 500, u.MaxCps / 500.0);
+            A("🎨", ru ? "Коллекционер" : "Collector",
+                ru ? "Опробуй все стили прицела" : "Try all crosshair styles", false, 0.0);
+
+            bool prevTop = this.TopMost;
+            this.TopMost = false;
+            _overlay.PauseTopmost();
+            using (var dlg = new AchievementsForm(list))
+            {
+                dlg.ShowDialog(this);
+            }
+            _overlay.ResumeTopmost();
+            this.TopMost = prevTop;
+            this.Activate();
         }
 
         // Legacy builder retained for safety (unused now that we dispatch by tab).
@@ -720,15 +756,25 @@ namespace CrosshairOverlay
             string combo = OverlayForm.HotkeyToString(_overlay._hkMods[hkId], _overlay._hkKeys[hkId]);
             AddButton($"{name}:  {combo}", () =>
             {
-                using var cap = new HotkeyCaptureForm(name, _overlay._hkMods[hkId], _overlay._hkKeys[hkId]);
-                if (cap.ShowDialog() == DialogResult.OK)
+                // Pause topmost so the capture dialog can come to front and receive focus.
+                bool prevTop = this.TopMost;
+                this.TopMost = false;
+                _overlay.PauseTopmost();
+                using (var cap = new HotkeyCaptureForm(name, _overlay._hkMods[hkId], _overlay._hkKeys[hkId]))
                 {
-                    _overlay._hkMods[hkId] = cap.ResultMod;
-                    _overlay._hkKeys[hkId] = cap.ResultVk;
-                    _overlay.ReRegisterHotkeys();
-                    _overlay.SaveSettings();
-                    BuildItems(); ComputeLayout(); Invalidate();
+                    var dr = cap.ShowDialog(this);
+                    if (dr == DialogResult.OK)
+                    {
+                        _overlay._hkMods[hkId] = cap.ResultMod;
+                        _overlay._hkKeys[hkId] = cap.ResultVk;
+                        _overlay.ReRegisterHotkeys();
+                        _overlay.SaveSettings();
+                        BuildItems(); ComputeLayout(); Invalidate();
+                    }
                 }
+                _overlay.ResumeTopmost();
+                this.TopMost = prevTop;
+                this.Activate();
             }, $"Нажмите чтобы изменить хоткей «{name}»");
         }
 
@@ -1160,8 +1206,9 @@ namespace CrosshairOverlay
                     using var btnPath = RoundRect(btnRect, 8);
 
                     // Draw gradient swatch
-                    Color c1 = si < ThemeGradients.Length ? ThemeGradients[si][0] : Color.Gray;
-                    Color c2 = si < ThemeGradients.Length ? ThemeGradients[si][1] : Color.DarkGray;
+                    var palette = item.GradientPalette ?? ThemeGradients;
+                    Color c1 = si < palette.Length ? palette[si][0] : Color.Gray;
+                    Color c2 = si < palette.Length ? palette[si][1] : Color.DarkGray;
                     using (var gradBrush = new LinearGradientBrush(btnRect, c1, c2, 45f))
                         g.FillPath(gradBrush, btnPath);
 

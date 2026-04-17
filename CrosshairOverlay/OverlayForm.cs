@@ -185,7 +185,6 @@ namespace CrosshairOverlay
         // Burst mode: when enabled and _clickOnHold, fires exactly _burstCount clicks per LMB press then waits for release.
         internal bool _burstMode = false;
         internal int _burstCount = 3;
-        private int _burstRemaining = 0;
         private bool _burstLastLmbState = false;
         // Accessor avoids CS1690 when callers read field via the Form reference.
         internal long GetClickCounter() => Interlocked.Read(ref _clickCounter);
@@ -661,7 +660,7 @@ namespace CrosshairOverlay
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
-                    if (_burstMode) { _burstLastLmbState = false; _burstRemaining = 0; }
+                    if (_burstMode) { _burstLastLmbState = false; }
                     carry = 0;
                     nextTick = Stopwatch.GetTimestamp();
                     Thread.Sleep(1);
@@ -670,28 +669,34 @@ namespace CrosshairOverlay
 
                 int cps = Math.Max(1, _clicksPerSecond);
 
-                // Number of clicks this tick
-                int clicks;
+                // Accumulate regular clicks at configured CPS (base rate, up to 60).
+                carry += cps * (TickMs / 1000.0);
+                int clicks = (int)carry;
+                carry -= clicks;
+
+                // Burst: on each fresh LMB press, add _burstCount EXTRA batched clicks on top
+                // of the regular stream. Since all clicks are sent in a single SendInput batch
+                // per tick, this is effectively free CPU-wise.
                 if (_clickOnHold && _burstMode)
                 {
-                    // Burst: fire exactly _burstCount on each fresh press, then idle.
                     if (!_burstLastLmbState)
                     {
                         _burstLastLmbState = true;
-                        _burstRemaining = Math.Max(1, _burstCount);
+                        clicks += Math.Max(1, _burstCount);
                     }
-                    clicks = _burstRemaining;
-                    if (clicks <= 0) { Thread.Sleep(1); continue; }
-                    _burstRemaining = 0;
-                }
-                else
-                {
-                    carry += cps * (TickMs / 1000.0);
-                    clicks = (int)carry;
-                    carry -= clicks;
                 }
 
-                if (clicks > 0)
+                if (clicks <= 0)
+                {
+                    // keep schedule ticking
+                    nextTick += ticksPerSec * TickMs / 1000;
+                    long nowIdle = Stopwatch.GetTimestamp();
+                    if (nextTick < nowIdle) nextTick = nowIdle;
+                    long remMs = (nextTick - nowIdle) * 1000 / ticksPerSec;
+                    if (remMs > 1) Thread.Sleep((int)remMs);
+                    continue;
+                }
+
                 {
                     // Apply random jitter to count so timing isn't perfectly periodic (anti-detect).
                     if (_randomDelay && clicks > 1)
@@ -1721,7 +1726,7 @@ namespace CrosshairOverlay
                 if (!string.IsNullOrEmpty(_customImagePath) && File.Exists(_customImagePath))
                     _customImageCache = new Bitmap(_customImagePath);
                 _autoClickerEnabled = data.AutoClickerEnabled;
-                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 5, 1000);
+                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 1, 60);
                 _clickOnHold = data.ClickOnHold;
                 _rightClickMode = data.RightClickMode;
                 _randomDelay = data.RandomDelay;

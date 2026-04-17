@@ -51,14 +51,11 @@ namespace CrosshairOverlay
             };
         }
 
-        protected override CreateParams CreateParams
+        protected override void OnShown(EventArgs e)
         {
-            get
-            {
-                var cp = base.CreateParams;
-                cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
-                return cp;
-            }
+            base.OnShown(e);
+            // Ensure the form receives keyboard focus so KeyDown fires.
+            try { Activate(); Focus(); } catch { }
         }
 
         private void OnKeyDown(object? sender, KeyEventArgs e)
