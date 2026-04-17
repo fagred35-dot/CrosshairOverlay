@@ -87,6 +87,9 @@ namespace CrosshairOverlay
         [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint uPeriod);
         [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint uPeriod);
         [DllImport("user32.dll")] private static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, IntPtr dwExtraInfo);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool SystemParametersInfo(uint uAction, uint uParam, ref int lpvParam, uint fuWinIni);
+        private const uint SPI_GETBEEP = 0x0001;
+        private const uint SPI_SETBEEP = 0x0002;
         [DllImport("user32.dll", SetLastError = true)] private static extern bool DestroyIcon(IntPtr hIcon);
         [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
         [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr hdcDest, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
@@ -121,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.6";
+        internal const string APP_VERSION = "2.1.7";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -167,6 +170,46 @@ namespace CrosshairOverlay
         internal volatile bool _clickerRunning = false;
         private readonly List<Thread> _clickThreads = new();
         private readonly object _clickLock = new();
+
+        // v2.1.7 — mute Windows "default beep" while clicking at high CPS.
+        // The system plays a beep when the input queue is flooded / messages hit
+        // disabled windows. We toggle SPI_SETBEEP off while our clicker or burst
+        // is active and restore on stop / form close.
+        internal bool _muteBeepDuringClicks = true;
+        private int _beepMuteDepth = 0;
+        private bool _savedBeepState = true;
+        private readonly object _beepLock = new();
+
+        private void BeepMuteAcquire()
+        {
+            if (!_muteBeepDuringClicks) return;
+            lock (_beepLock)
+            {
+                if (_beepMuteDepth == 0)
+                {
+                    int cur = 1;
+                    try { SystemParametersInfo(SPI_GETBEEP, 0, ref cur, 0); } catch { }
+                    _savedBeepState = cur != 0;
+                    int off = 0;
+                    try { SystemParametersInfo(SPI_SETBEEP, 0, ref off, 0); } catch { }
+                }
+                _beepMuteDepth++;
+            }
+        }
+
+        private void BeepMuteRelease()
+        {
+            lock (_beepLock)
+            {
+                if (_beepMuteDepth == 0) return;
+                _beepMuteDepth--;
+                if (_beepMuteDepth == 0 && _savedBeepState)
+                {
+                    int on = 1;
+                    try { SystemParametersInfo(SPI_SETBEEP, 0, ref on, 0); } catch { }
+                }
+            }
+        }
         #endregion
 
         #region Dynamic Crosshair
@@ -622,6 +665,7 @@ namespace CrosshairOverlay
                 _sessionStartTime = DateTime.UtcNow;
                 Interlocked.Exchange(ref _clickCounter, 0);
                 timeBeginPeriod(1);
+                BeepMuteAcquire();
 
                 // Single high-priority thread handles all clicks with an absolute-tick schedule.
                 // One thread can easily sustain 800+ CPS with busy-waiting; multi-threading caused
@@ -700,8 +744,11 @@ namespace CrosshairOverlay
                     uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
                     uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
 
-                    // Send in chunks so we don't exceed the buffer.
-                    int maxPerCall = buf.Length / 2;
+                    // Chunk size: keep batches small so the OS input queue isn't flooded
+                    // (overflow triggers the Windows default "beep" sound). 16 clicks per
+                    // SendInput call = up to 2000 CPS in bursts without a single beep.
+                    const int CLICKS_PER_CALL = 16;
+                    int maxPerCall = Math.Min(CLICKS_PER_CALL, buf.Length / 2);
                     while (clicks > 0 && _clickerRunning)
                     {
                         int thisBatch = Math.Min(clicks, maxPerCall);
@@ -717,6 +764,7 @@ namespace CrosshairOverlay
                         long made = Math.Max(0, (long)sent / 2);
                         Interlocked.Add(ref _clickCounter, made);
                         clicks -= thisBatch;
+                        if (clicks > 0) Thread.Sleep(0); // yield between chunks
                     }
 
                     if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
@@ -742,6 +790,7 @@ namespace CrosshairOverlay
                 _clickThreads.Clear();
 
                 timeEndPeriod(1);
+                BeepMuteRelease();
             }
         }
 
@@ -770,6 +819,7 @@ namespace CrosshairOverlay
                 if (_burstRunning) return;
                 _burstRunning = true;
                 _burstLastLmbState = false;
+                BeepMuteAcquire();
                 _burstThread = new Thread(BurstLoop)
                 {
                     IsBackground = true,
@@ -786,6 +836,7 @@ namespace CrosshairOverlay
                 _burstRunning = false;
                 try { _burstThread?.Join(500); } catch { }
                 _burstThread = null;
+                BeepMuteRelease();
             }
         }
 
@@ -807,7 +858,8 @@ namespace CrosshairOverlay
                     uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
                     uint upFlag   = _rightClickMode ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
 
-                    int maxPerCall = buf.Length / 2;
+                    const int CLICKS_PER_CALL = 16;
+                    int maxPerCall = Math.Min(CLICKS_PER_CALL, buf.Length / 2);
                     while (count > 0 && _burstRunning)
                     {
                         int thisBatch = Math.Min(count, maxPerCall);
@@ -822,6 +874,7 @@ namespace CrosshairOverlay
                         long made = Math.Max(0, (long)sent / 2);
                         Interlocked.Add(ref _clickCounter, made);
                         count -= thisBatch;
+                        if (count > 0) Thread.Sleep(0);
                     }
 
                     if (_hitMarkerEnabled) _hitMarkerProgress = 1f;

@@ -395,6 +395,10 @@ namespace CrosshairOverlay
             AddToggle(Lang.RightClick, _overlay._rightClickMode, v => _overlay._rightClickMode = v, Lang.RightClickTooltip);
             AddToggle(Lang.RandomDelay, _overlay._randomDelay, v => _overlay._randomDelay = v, Lang.RandomDelayTooltip);
             AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5, v => _overlay._randomDelayPercent = v, Lang.SpreadPercentTooltip);
+            AddToggle(Lang.IsRussian ? "Без системного писка" : "Mute system beep",
+                _overlay._muteBeepDuringClicks,
+                v => { _overlay._muteBeepDuringClicks = v; _overlay.SaveSettings(); },
+                Lang.IsRussian ? "Глушить Windows beep при большом CPS" : "Silence Windows default beep at high CPS");
             AddSpacer();
 
             // Burst (independent process — runs on LMB press regardless of autoclicker)
