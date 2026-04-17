@@ -121,7 +121,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.5";
+        internal const string APP_VERSION = "2.1.6";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -399,6 +399,9 @@ namespace CrosshairOverlay
 
             // Install low-level mouse hook
             InstallMouseHook();
+
+            // Burst runs as an independent process; start it if it was saved as enabled.
+            UpdateBurstState();
         }
 
         internal void PauseTopmost() => _topmostTimer.Stop();
@@ -430,6 +433,7 @@ namespace CrosshairOverlay
             _animTimer.Stop(); _animTimer.Dispose();
             _topmostTimer.Stop(); _topmostTimer.Dispose();
             StopClicker();
+            StopBurst();
             UninstallMouseHook();
             _recorder.Dispose();
             _galleryForm?.Close();
@@ -513,6 +517,7 @@ namespace CrosshairOverlay
                         break;
                     case HK_BURST_TOGGLE:
                         _burstMode = !_burstMode;
+                        UpdateBurstState();
                         SaveSettings();
                         _trayIcon?.ShowBalloonTip(1500, "Crosshair Overlay",
                             (Lang.IsRussian ? "Burst-режим: " : "Burst mode: ") + (_burstMode ? "ON" : "OFF"),
@@ -660,7 +665,6 @@ namespace CrosshairOverlay
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
-                    if (_burstMode) { _burstLastLmbState = false; }
                     carry = 0;
                     nextTick = Stopwatch.GetTimestamp();
                     Thread.Sleep(1);
@@ -673,18 +677,6 @@ namespace CrosshairOverlay
                 carry += cps * (TickMs / 1000.0);
                 int clicks = (int)carry;
                 carry -= clicks;
-
-                // Burst: on each fresh LMB press, add _burstCount EXTRA batched clicks on top
-                // of the regular stream. Since all clicks are sent in a single SendInput batch
-                // per tick, this is effectively free CPU-wise.
-                if (_clickOnHold && _burstMode)
-                {
-                    if (!_burstLastLmbState)
-                    {
-                        _burstLastLmbState = true;
-                        clicks += Math.Max(1, _burstCount);
-                    }
-                }
 
                 if (clicks <= 0)
                 {
@@ -753,6 +745,96 @@ namespace CrosshairOverlay
             }
         }
 
+
+        // ═══════════════════════════════════════════════════
+        //  BURST — independent of autoclicker
+        //  Fires _burstCount batched clicks on each fresh physical LMB press.
+        //  Works whether or not the regular autoclicker is running.
+        // ═══════════════════════════════════════════════════
+        private volatile bool _burstRunning = false;
+        private Thread? _burstThread;
+        private readonly object _burstLock = new();
+
+        internal void UpdateBurstState()
+        {
+            if (_burstMode && !_burstRunning)
+                StartBurst();
+            else if (!_burstMode && _burstRunning)
+                StopBurst();
+        }
+
+        private void StartBurst()
+        {
+            lock (_burstLock)
+            {
+                if (_burstRunning) return;
+                _burstRunning = true;
+                _burstLastLmbState = false;
+                _burstThread = new Thread(BurstLoop)
+                {
+                    IsBackground = true,
+                    Priority = ThreadPriority.Highest
+                };
+                _burstThread.Start();
+            }
+        }
+
+        private void StopBurst()
+        {
+            lock (_burstLock)
+            {
+                _burstRunning = false;
+                try { _burstThread?.Join(500); } catch { }
+                _burstThread = null;
+            }
+        }
+
+        private void BurstLoop()
+        {
+            INPUT[] buf = new INPUT[256];
+            int inputSize = Marshal.SizeOf<INPUT>();
+
+            while (_burstRunning)
+            {
+                bool lmb = _physicalLmbDown;
+
+                // Rising edge → fire a burst
+                if (lmb && !_burstLastLmbState)
+                {
+                    _burstLastLmbState = true;
+
+                    int count = Math.Max(1, _burstCount);
+                    uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+                    uint upFlag   = _rightClickMode ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
+
+                    int maxPerCall = buf.Length / 2;
+                    while (count > 0 && _burstRunning)
+                    {
+                        int thisBatch = Math.Min(count, maxPerCall);
+                        for (int i = 0; i < thisBatch; i++)
+                        {
+                            buf[i * 2].type = INPUT_MOUSE;
+                            buf[i * 2].mi = new MOUSEINPUT { dwFlags = downFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                            buf[i * 2 + 1].type = INPUT_MOUSE;
+                            buf[i * 2 + 1].mi = new MOUSEINPUT { dwFlags = upFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                        }
+                        uint sent = SendInput((uint)(thisBatch * 2), buf, inputSize);
+                        long made = Math.Max(0, (long)sent / 2);
+                        Interlocked.Add(ref _clickCounter, made);
+                        count -= thisBatch;
+                    }
+
+                    if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
+                }
+                else if (!lmb)
+                {
+                    _burstLastLmbState = false;
+                }
+
+                // Light poll — hook sets _physicalLmbDown instantly, we just need to notice.
+                Thread.Sleep(1);
+            }
+        }
 
 
         #endregion

@@ -397,12 +397,13 @@ namespace CrosshairOverlay
             AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5, v => _overlay._randomDelayPercent = v, Lang.SpreadPercentTooltip);
             AddSpacer();
 
-            // Burst (batched — high speed, low CPU)
-            AddSection(Lang.IsRussian ? "──  BURST (доп. клики)  ──" : "──  BURST (extra clicks)  ──");
-            AddToggle(Lang.IsRussian ? "Burst режим" : "Burst mode", _overlay._burstMode, v => _overlay._burstMode = v,
-                Lang.IsRussian ? "Доп. быстрые клики (пакетная отправка, без нагрузки на ПК)" : "Extra fast clicks (batched, no CPU load)");
+            // Burst (independent process — runs on LMB press regardless of autoclicker)
+            AddSection(Lang.IsRussian ? "──  BURST (независимый процесс)  ──" : "──  BURST (independent process)  ──");
+            AddToggle(Lang.IsRussian ? "Burst режим" : "Burst mode", _overlay._burstMode,
+                v => { _overlay._burstMode = v; _overlay.UpdateBurstState(); },
+                Lang.IsRussian ? "Отдельный процесс. Работает независимо от автокликера." : "Separate process. Works independently of autoclicker.");
             AddSlider(Lang.IsRussian ? "Кликов в Burst" : "Burst count", _overlay._burstCount, 1, 200, 1, v => _overlay._burstCount = v,
-                Lang.IsRussian ? "Сколько кликов за одно нажатие ЛКМ" : "Clicks per single LMB press");
+                Lang.IsRussian ? "Пачка кликов на каждое нажатие ЛКМ (одним SendInput)" : "Batched clicks per each LMB press (single SendInput)");
             AddSpacer();
 
             // Session limits (#40, #41)
