@@ -78,6 +78,11 @@ namespace CrosshairOverlay
 
         // Scrollbar drag
         private bool _draggingScrollbar = false;
+        private int _scrollGrabOffset = 0; // offset from thumb top to grab point
+        // Scrollbar geometry
+        private const int ScrollbarWidth = 8;
+        private const int ScrollbarRightPad = 3;
+        private const int ScrollbarHitPad = 14; // clickable area (wider than visual bar)
 
         // Cached fonts
         private readonly Font _fontTitle = new("Segoe UI", 16f, FontStyle.Bold);
@@ -1045,14 +1050,22 @@ namespace CrosshairOverlay
             if (_contentHeight <= viewH) return;
 
             float ratio = (float)viewH / _contentHeight;
-            int barH = Math.Max(30, (int)(viewH * ratio));
+            int barH = Math.Max(40, (int)(viewH * ratio));
             int maxScroll = _contentHeight - viewH;
             float scrollRatio = maxScroll > 0 ? (float)_scrollY / maxScroll : 0;
             int barY = HeaderHeight + 4 + (int)((viewH - barH) * scrollRatio);
 
-            using var barBrush = new SolidBrush(Color.FromArgb(50, AccentGlow));
-            var barRect = new Rectangle(PanelWidth - 7, barY, 4, barH);
-            using var barPath = RoundRect(barRect, 2);
+            // Track (subtle)
+            var trackRect = new Rectangle(PanelWidth - ScrollbarRightPad - ScrollbarWidth, HeaderHeight + 4, ScrollbarWidth, viewH);
+            using (var trackBrush = new SolidBrush(Color.FromArgb(25, 255, 255, 255)))
+            using (var trackPath = RoundRect(trackRect, ScrollbarWidth / 2))
+                g.FillPath(trackBrush, trackPath);
+
+            // Thumb
+            int thumbAlpha = _draggingScrollbar ? 220 : 140;
+            using var barBrush = new SolidBrush(Color.FromArgb(thumbAlpha, AccentGlow));
+            var barRect = new Rectangle(PanelWidth - ScrollbarRightPad - ScrollbarWidth, barY, ScrollbarWidth, barH);
+            using var barPath = RoundRect(barRect, ScrollbarWidth / 2);
             g.FillPath(barBrush, barPath);
         }
 
@@ -1111,9 +1124,26 @@ namespace CrosshairOverlay
 
             // Scrollbar drag
             int viewH = this.Height - HeaderHeight - 4;
-            if (_contentHeight > viewH && e.X >= PanelWidth - 14)
+            if (_contentHeight > viewH && e.X >= PanelWidth - ScrollbarHitPad)
             {
+                // Compute current thumb geometry
+                float ratio = (float)viewH / _contentHeight;
+                int barH = Math.Max(40, (int)(viewH * ratio));
+                int maxScroll = _contentHeight - viewH;
+                float scrollRatio = maxScroll > 0 ? (float)_scrollY / maxScroll : 0;
+                int barY = HeaderHeight + 4 + (int)((viewH - barH) * scrollRatio);
+
                 _draggingScrollbar = true;
+                if (e.Y >= barY && e.Y < barY + barH)
+                {
+                    // Grabbed on thumb — remember offset so thumb doesn't jump
+                    _scrollGrabOffset = e.Y - barY;
+                }
+                else
+                {
+                    // Clicked on track — center thumb under cursor
+                    _scrollGrabOffset = barH / 2;
+                }
                 HandleScrollbarDrag(e.Y);
                 return;
             }
@@ -1224,8 +1254,13 @@ namespace CrosshairOverlay
         {
             int viewH = this.Height - HeaderHeight - 4;
             int maxScroll = Math.Max(1, _contentHeight - viewH);
-            float ratio = (float)(mouseY - HeaderHeight - 4) / viewH;
-            _scrollY = Math.Clamp((int)(ratio * maxScroll), 0, maxScroll);
+            float ratio = (float)viewH / _contentHeight;
+            int barH = Math.Max(40, (int)(viewH * ratio));
+            // Convert mouse Y to thumb top (subtract grab offset), then into scroll position.
+            int trackTop = HeaderHeight + 4;
+            int thumbTop = mouseY - trackTop - _scrollGrabOffset;
+            int thumbTravel = Math.Max(1, viewH - barH);
+            _scrollY = Math.Clamp((int)((float)thumbTop / thumbTravel * maxScroll), 0, maxScroll);
             Invalidate();
         }
 

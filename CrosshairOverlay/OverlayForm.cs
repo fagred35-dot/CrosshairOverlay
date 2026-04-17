@@ -120,7 +120,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.0";
+        internal const string APP_VERSION = "2.1.1";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -165,7 +165,6 @@ namespace CrosshairOverlay
         internal volatile int _clicksPerSecond = 30;
         internal volatile bool _clickerRunning = false;
         private readonly List<Thread> _clickThreads = new();
-        private volatile int _threadCount = 1;
         private readonly object _clickLock = new();
         #endregion
 
@@ -572,37 +571,35 @@ namespace CrosshairOverlay
                 _clickerRunning = true;
                 timeBeginPeriod(1);
 
-                int cps = _clicksPerSecond;
-                // Each thread can do ~60-100 CPS with Thread.Sleep(1)
-                int threadCount = Math.Clamp((int)Math.Ceiling(cps / 60.0), 1, 16);
-                _threadCount = threadCount;
-
+                // Single high-priority thread handles all clicks with an absolute-tick schedule.
+                // One thread can easily sustain 800+ CPS with busy-waiting; multi-threading caused
+                // event coalescing in the OS input queue and artificially halved observed CPS.
                 _clickThreads.Clear();
-                for (int i = 0; i < threadCount; i++)
+                var t = new Thread(ClickLoop)
                 {
-                    var t = new Thread(ClickLoop)
-                    {
-                        IsBackground = true,
-                        Priority = ThreadPriority.Highest
-                    };
-                    _clickThreads.Add(t);
-                    t.Start();
-                    Thread.Sleep(1);
-                }
+                    IsBackground = true,
+                    Priority = ThreadPriority.Highest
+                };
+                _clickThreads.Add(t);
+                t.Start();
             }
         }
 
         private void ClickLoop()
         {
-            var sw = new Stopwatch();
+            // Absolute-tick scheduling: compute target time for each click and busy-wait to it.
+            // This prevents drift accumulation from Thread.Sleep inaccuracies.
+            long ticksPerSec = Stopwatch.Frequency;
+            long nextTick = Stopwatch.GetTimestamp();
 
             while (_clickerRunning)
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
-                    // Reset burst armer so the next press starts fresh
                     if (_burstMode) { _burstLastLmbState = false; _burstRemaining = 0; }
                     Thread.Sleep(1);
+                    // Reset schedule so the next press starts immediately.
+                    nextTick = Stopwatch.GetTimestamp();
                     continue;
                 }
 
@@ -616,41 +613,47 @@ namespace CrosshairOverlay
                     }
                     if (Interlocked.Decrement(ref _burstRemaining) < 0)
                     {
-                        // Already fired the requested amount — idle until button released.
                         Thread.Sleep(1);
                         continue;
                     }
                 }
 
-                int cps = _clicksPerSecond;
-                int threads = _threadCount;
-                int myCps = Math.Max(1, cps / threads);
-
-                uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
-                uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
-
-                sw.Restart();
-
-                mouse_event(downFlag | upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
-
-                Interlocked.Add(ref _clickCounter, 1);
-                if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
-
-                // Throttle: wait for interval based on this thread's share of CPS
-                long intervalTicks = Stopwatch.Frequency / myCps;
+                int cps = Math.Max(1, _clicksPerSecond);
+                long interval = ticksPerSec / cps;
                 if (_randomDelay)
                 {
                     double jitter = 1.0 + (Random.Shared.NextDouble() * 2 - 1) * (_randomDelayPercent / 100.0);
-                    intervalTicks = (long)(intervalTicks * Math.Max(0.2, jitter));
+                    interval = (long)(interval * Math.Max(0.2, jitter));
                 }
 
-                long msToWait = intervalTicks * 1000 / Stopwatch.Frequency;
-                if (msToWait > 2)
-                    Thread.Sleep((int)(msToWait - 1));
-                while (sw.ElapsedTicks < intervalTicks)
+                // Fire click: DOWN and UP as SEPARATE mouse_event calls so click counters see
+                // a real DOWN→UP transition with non-zero hold time. Combining flags in one call
+                // produced zero-duration events that many CPS counters dedupe/halve.
+                uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+                uint upFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+                mouse_event(downFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+                // Tiny hold time (~1ms) between down and up so events are distinguishable.
+                long holdTarget = Stopwatch.GetTimestamp() + ticksPerSec / 1000;
+                while (Stopwatch.GetTimestamp() < holdTarget) Thread.SpinWait(40);
+                mouse_event(upFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+
+                Interlocked.Increment(ref _clickCounter);
+                if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
+
+                // Schedule next click on absolute timeline to avoid drift.
+                nextTick += interval;
+                long now = Stopwatch.GetTimestamp();
+                // If we're far behind (e.g. after pause), resync.
+                if (nextTick < now - interval) nextTick = now + interval;
+
+                long remaining = nextTick - now;
+                long remainingMs = remaining * 1000 / ticksPerSec;
+                if (remainingMs > 3)
+                    Thread.Sleep((int)(remainingMs - 2));
+                while (Stopwatch.GetTimestamp() < nextTick)
                 {
                     if (!_clickerRunning) return;
-                    Thread.SpinWait(10);
+                    Thread.SpinWait(40);
                 }
             }
         }
