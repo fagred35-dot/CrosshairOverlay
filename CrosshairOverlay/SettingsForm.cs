@@ -752,29 +752,47 @@ namespace CrosshairOverlay
 
         private void AddHotkeyButton(int hkId)
         {
-            string name = Lang.HotkeyNamesArr[hkId];
-            string combo = OverlayForm.HotkeyToString(_overlay._hkMods[hkId], _overlay._hkKeys[hkId]);
+            // Defensive bounds: array was extended in v2.1.3 from 18 to 22 entries.
+            // If an older saved settings file yields out-of-range here, fall back gracefully.
+            string name = (hkId >= 0 && hkId < Lang.HotkeyNamesArr.Length)
+                ? Lang.HotkeyNamesArr[hkId] : "Hotkey " + hkId;
+            uint curMod = (hkId >= 0 && hkId < _overlay._hkMods.Length) ? _overlay._hkMods[hkId] : 0u;
+            uint curVk  = (hkId >= 0 && hkId < _overlay._hkKeys.Length) ? _overlay._hkKeys[hkId] : 0u;
+            string combo = OverlayForm.HotkeyToString(curMod, curVk);
             AddButton($"{name}:  {combo}", () =>
             {
-                // Pause topmost so the capture dialog can come to front and receive focus.
-                bool prevTop = this.TopMost;
-                this.TopMost = false;
-                _overlay.PauseTopmost();
-                using (var cap = new HotkeyCaptureForm(name, _overlay._hkMods[hkId], _overlay._hkKeys[hkId]))
+                try
                 {
-                    var dr = cap.ShowDialog(this);
-                    if (dr == DialogResult.OK)
+                    // Pause topmost so the capture dialog can come to front and receive focus.
+                    bool prevTop = this.TopMost;
+                    this.TopMost = false;
+                    _overlay.PauseTopmost();
+                    using (var cap = new HotkeyCaptureForm(name, curMod, curVk))
                     {
-                        _overlay._hkMods[hkId] = cap.ResultMod;
-                        _overlay._hkKeys[hkId] = cap.ResultVk;
-                        _overlay.ReRegisterHotkeys();
-                        _overlay.SaveSettings();
-                        BuildItems(); ComputeLayout(); Invalidate();
+                        var dr = cap.ShowDialog(this);
+                        if (dr == DialogResult.OK)
+                        {
+                            if (hkId >= 0 && hkId < _overlay._hkMods.Length)
+                            {
+                                _overlay._hkMods[hkId] = cap.ResultMod;
+                                _overlay._hkKeys[hkId] = cap.ResultVk;
+                                _overlay.ReRegisterHotkeys();
+                                _overlay.SaveSettings();
+                            }
+                            BuildItems(); ComputeLayout(); Invalidate();
+                        }
                     }
+                    _overlay.ResumeTopmost();
+                    this.TopMost = prevTop;
+                    this.Activate();
                 }
-                _overlay.ResumeTopmost();
-                this.TopMost = prevTop;
-                this.Activate();
+                catch (Exception ex)
+                {
+                    try { _overlay.ResumeTopmost(); } catch { }
+                    MessageBox.Show(this,
+                        "Не удалось открыть окно назначения хоткея:\n" + ex.GetType().Name + ": " + ex.Message + "\n\n" + ex.StackTrace,
+                        "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
             }, $"Нажмите чтобы изменить хоткей «{name}»");
         }
 
