@@ -389,7 +389,7 @@ namespace CrosshairOverlay
                 v => { _overlay._autoClickerEnabled = v; _overlay.UpdateClickerState(); },
                 Lang.EnableAutoclickerTooltip);
             AddToggle(Lang.HoldMode, _overlay._clickOnHold, v => _overlay._clickOnHold = v, Lang.HoldModeTooltip);
-            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 1, 60, 1,
+            AddSlider(Lang.ClicksPerSec, _overlay._clicksPerSecond, 1, 1000, 1,
                 v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); },
                 Lang.IsRussian ? "Обычный автокликер (до 60 кпс)" : "Regular autoclicker (up to 60 CPS)");
             AddToggle(Lang.RightClick, _overlay._rightClickMode, v => _overlay._rightClickMode = v, Lang.RightClickTooltip);

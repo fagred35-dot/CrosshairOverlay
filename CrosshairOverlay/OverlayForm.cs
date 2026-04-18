@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.9";
+        internal const string APP_VERSION = "2.2.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -256,7 +256,7 @@ namespace CrosshairOverlay
         private DateTime _sessionStartTime = DateTime.UtcNow;
         // #57 Disable overlay in fullscreen apps
         internal bool _hideInFullscreen = false;
-        private int _fullscreenCheckCounter = 0;
+        private DateTime _lastPeriodicCheck = DateTime.MinValue;
         // #47 Jitter aim (small random mouse offsets while clicker running)
         internal bool _jitterAim = false;
         internal int _jitterAimPx = 2;
@@ -307,7 +307,7 @@ namespace CrosshairOverlay
             _hkMods[HK_COLOR] = CS;        _hkKeys[HK_COLOR] = 0x43;        // C
             _hkMods[HK_RESET] = CS;        _hkKeys[HK_RESET] = 0x52;        // R
             _hkMods[HK_CLICKER_TOGGLE] = CS; _hkKeys[HK_CLICKER_TOGGLE] = 0x41; // A
-            _hkMods[HK_SETTINGS] = 0;      _hkKeys[HK_SETTINGS] = 0x2D;     // INS
+            _hkMods[HK_SETTINGS] = CS;     _hkKeys[HK_SETTINGS] = 0x70;     // Ctrl+Shift+F1 (bare INS blocks the key system-wide)
             _hkMods[HK_RECORD] = CS;       _hkKeys[HK_RECORD] = 0x78;       // F9
             _hkMods[HK_REPLAY_SAVE] = CS;  _hkKeys[HK_REPLAY_SAVE] = 0x79;  // F10
             _hkMods[HK_GALLERY] = CS;      _hkKeys[HK_GALLERY] = 0x47;      // G
@@ -1059,11 +1059,10 @@ namespace CrosshairOverlay
                 needsRender = true;
             }
 
-            // === v2.1.3 periodic checks (every ~200ms instead of every 16ms) ===
-            _fullscreenCheckCounter++;
-            if (_fullscreenCheckCounter >= 12) // 12 * 16ms ≈ 200ms
+            // === v2.1.3 periodic checks: every ~200ms wall-clock (independent of anim tick rate) ===
+            if ((DateTime.UtcNow - _lastPeriodicCheck).TotalMilliseconds >= 200)
             {
-                _fullscreenCheckCounter = 0;
+                _lastPeriodicCheck = DateTime.UtcNow;
 
                 // #57 Hide overlay if a fullscreen app is foreground
                 if (_hideInFullscreen)
@@ -1121,6 +1120,20 @@ namespace CrosshairOverlay
 
             if (needsRender && _currentOpacity > 0.5f)
                 RenderOverlay();
+
+            // Adaptive tick rate: run at 60 FPS only when something actually animates.
+            // Otherwise drop to 10 Hz to free GPU/CPU for the foreground game.
+            bool anyAnim =
+                _rainbowMode
+                || (_spin && _isVisible)
+                || (_dotPulse && _showDot && _isVisible)
+                || _dynamicCrosshair
+                || _pulseScale > 1.005f
+                || Math.Abs(_currentOpacity - _targetOpacity) > 0.5f
+                || _hitMarkerProgress > 0.01f;
+            int desiredInterval = anyAnim ? 16 : 100;
+            if (_animTimer.Interval != desiredInterval)
+                _animTimer.Interval = desiredInterval;
         }
 
         #endregion
@@ -1905,7 +1918,7 @@ namespace CrosshairOverlay
                 if (!string.IsNullOrEmpty(_customImagePath) && File.Exists(_customImagePath))
                     _customImageCache = new Bitmap(_customImagePath);
                 _autoClickerEnabled = data.AutoClickerEnabled;
-                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 1, 60);
+                _clicksPerSecond = Math.Clamp(data.ClicksPerSecond, 1, 1000);
                 _clickOnHold = data.ClickOnHold;
                 _rightClickMode = data.RightClickMode;
                 _randomDelay = data.RandomDelay;
@@ -1951,6 +1964,14 @@ namespace CrosshairOverlay
                     {
                         _hkMods[HK_EMERGENCY_STOP] = 0x0002 | 0x0004; // Ctrl+Shift
                         _hkKeys[HK_EMERGENCY_STOP] = 0x13;
+                    }
+                    // v2.2.0 migration: bare INS on settings hotkey blocks Insert system-wide.
+                    if (HK_SETTINGS <= HOTKEY_COUNT
+                        && _hkKeys[HK_SETTINGS] == 0x2D
+                        && _hkMods[HK_SETTINGS] == 0)
+                    {
+                        _hkMods[HK_SETTINGS] = 0x0002 | 0x0004; // Ctrl+Shift
+                        _hkKeys[HK_SETTINGS] = 0x70; // F1
                     }
                 }
                 Lang.IsRussian = data.LanguageRu;
