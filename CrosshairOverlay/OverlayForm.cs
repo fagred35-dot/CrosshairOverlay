@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.2.1";
+        internal const string APP_VERSION = "2.2.2";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -318,7 +318,7 @@ namespace CrosshairOverlay
             _hkMods[HK_PRESET_NEXT] = CS;   _hkKeys[HK_PRESET_NEXT] = 0xDD;   // ] — next preset
             _hkMods[HK_PRESET_PREV] = CS;   _hkKeys[HK_PRESET_PREV] = 0xDB;   // [ — prev preset
             _hkMods[HK_ANTI_AFK] = CS;      _hkKeys[HK_ANTI_AFK] = 0x4B;      // K — anti-afk
-            _hkMods[HK_BURST_FIRE] = CS;    _hkKeys[HK_BURST_FIRE] = 0x56;    // V — fire burst shot
+            _hkMods[HK_BURST_FIRE] = CS;    _hkKeys[HK_BURST_FIRE] = 0x71;    // Ctrl+Shift+F2 — fire burst shot (V conflicts with paste-as-plain-text)
         }
 
         internal void ReRegisterHotkeys()
@@ -845,29 +845,48 @@ namespace CrosshairOverlay
             }
         }
 
+        private volatile bool _fireBurstBusy = false;
+
         /// <summary>
         /// Fire one burst shot immediately (used by the dedicated burst hotkey).
         /// Independent from the _burstMode toggle and from physical LMB state.
         /// </summary>
         internal void FireBurstOnce()
         {
-            int count = Math.Max(1, _burstCount);
-            uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
-            uint upFlag   = _rightClickMode ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
+            // Run on a background thread so we don't block the UI message pump while
+            // SendInput spams clicks. Guard prevents overlapping fires if the user
+            // spams the hotkey.
+            if (_fireBurstBusy) return;
+            _fireBurstBusy = true;
+            var th = new Thread(FireBurstOnceWorker)
+            {
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal
+            };
+            th.Start();
+        }
 
-            BeepMuteAcquire();
+        private void FireBurstOnceWorker()
+        {
             try
             {
-                INPUT[] fbuf = new INPUT[32];
-                int fInputSize = Marshal.SizeOf<INPUT>();
-                const int CLICKS_PER_CALL = 16;
-                while (count > 0)
+                int count = Math.Max(1, _burstCount);
+                uint downFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+                uint upFlag   = _rightClickMode ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
+
+                BeepMuteAcquire();
+                try
                 {
-                    int thisBatch = Math.Min(count, CLICKS_PER_CALL);
-                    for (int i = 0; i < thisBatch; i++)
+                    INPUT[] fbuf = new INPUT[32];
+                    int fInputSize = Marshal.SizeOf<INPUT>();
+                    const int CLICKS_PER_CALL = 16;
+                    while (count > 0)
                     {
-                        fbuf[i * 2].type = INPUT_MOUSE;
-                        fbuf[i * 2].mi = new MOUSEINPUT { dwFlags = downFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
+                        int thisBatch = Math.Min(count, CLICKS_PER_CALL);
+                        for (int i = 0; i < thisBatch; i++)
+                        {
+                            fbuf[i * 2].type = INPUT_MOUSE;
+                            fbuf[i * 2].mi = new MOUSEINPUT { dwFlags = downFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
                         fbuf[i * 2 + 1].type = INPUT_MOUSE;
                         fbuf[i * 2 + 1].mi = new MOUSEINPUT { dwFlags = upFlag, dwExtraInfo = SYNTHETIC_EXTRA_INFO };
                     }
@@ -882,6 +901,9 @@ namespace CrosshairOverlay
             {
                 BeepMuteRelease();
             }
+            }
+            catch { }
+            finally { _fireBurstBusy = false; }
         }
 
         private void BurstLoop()
@@ -1974,6 +1996,13 @@ namespace CrosshairOverlay
                     {
                         _hkMods[HK_SETTINGS] = 0;
                         _hkKeys[HK_SETTINGS] = 0x2D; // INS
+                    }
+                    // v2.2.2: Ctrl+Shift+V conflicts with "paste-as-plain-text" everywhere → move to Ctrl+Shift+F2.
+                    if (HK_BURST_FIRE <= HOTKEY_COUNT
+                        && _hkKeys[HK_BURST_FIRE] == 0x56
+                        && _hkMods[HK_BURST_FIRE] == (0x0002 | 0x0004))
+                    {
+                        _hkKeys[HK_BURST_FIRE] = 0x71; // F2
                     }
                 }
                 Lang.IsRussian = data.LanguageRu;
