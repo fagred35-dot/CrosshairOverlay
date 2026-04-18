@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.2.0";
+        internal const string APP_VERSION = "2.2.1";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -307,7 +307,7 @@ namespace CrosshairOverlay
             _hkMods[HK_COLOR] = CS;        _hkKeys[HK_COLOR] = 0x43;        // C
             _hkMods[HK_RESET] = CS;        _hkKeys[HK_RESET] = 0x52;        // R
             _hkMods[HK_CLICKER_TOGGLE] = CS; _hkKeys[HK_CLICKER_TOGGLE] = 0x41; // A
-            _hkMods[HK_SETTINGS] = CS;     _hkKeys[HK_SETTINGS] = 0x70;     // Ctrl+Shift+F1 (bare INS blocks the key system-wide)
+            _hkMods[HK_SETTINGS] = 0;      _hkKeys[HK_SETTINGS] = 0x2D;     // INS
             _hkMods[HK_RECORD] = CS;       _hkKeys[HK_RECORD] = 0x78;       // F9
             _hkMods[HK_REPLAY_SAVE] = CS;  _hkKeys[HK_REPLAY_SAVE] = 0x79;  // F10
             _hkMods[HK_GALLERY] = CS;      _hkKeys[HK_GALLERY] = 0x47;      // G
@@ -828,7 +828,7 @@ namespace CrosshairOverlay
                 _burstThread = new Thread(BurstLoop)
                 {
                     IsBackground = true,
-                    Priority = ThreadPriority.Highest
+                    Priority = ThreadPriority.AboveNormal
                 };
                 _burstThread.Start();
             }
@@ -929,7 +929,8 @@ namespace CrosshairOverlay
                 }
 
                 // Light poll — hook sets _physicalLmbDown instantly, we just need to notice.
-                Thread.Sleep(1);
+                // 3ms gives 300 Hz sampling — plenty for LMB edge detection without starving the system.
+                Thread.Sleep(3);
             }
         }
 
@@ -1965,13 +1966,14 @@ namespace CrosshairOverlay
                         _hkMods[HK_EMERGENCY_STOP] = 0x0002 | 0x0004; // Ctrl+Shift
                         _hkKeys[HK_EMERGENCY_STOP] = 0x13;
                     }
-                    // v2.2.0 migration: bare INS on settings hotkey blocks Insert system-wide.
+                    // v2.2.1: undo v2.2.0's accidental INS → Ctrl+Shift+F1 migration for settings hotkey.
+                    // Users expect INS to open settings.
                     if (HK_SETTINGS <= HOTKEY_COUNT
-                        && _hkKeys[HK_SETTINGS] == 0x2D
-                        && _hkMods[HK_SETTINGS] == 0)
+                        && _hkKeys[HK_SETTINGS] == 0x70
+                        && _hkMods[HK_SETTINGS] == (0x0002 | 0x0004))
                     {
-                        _hkMods[HK_SETTINGS] = 0x0002 | 0x0004; // Ctrl+Shift
-                        _hkKeys[HK_SETTINGS] = 0x70; // F1
+                        _hkMods[HK_SETTINGS] = 0;
+                        _hkKeys[HK_SETTINGS] = 0x2D; // INS
                     }
                 }
                 Lang.IsRussian = data.LanguageRu;
