@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.1.8";
+        internal const string APP_VERSION = "2.1.9";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -313,7 +313,7 @@ namespace CrosshairOverlay
             _hkMods[HK_GALLERY] = CS;      _hkKeys[HK_GALLERY] = 0x47;      // G
             _hkMods[HK_SCREENSHOT] = CS;    _hkKeys[HK_SCREENSHOT] = 0x7B;    // F12
             _hkMods[HK_BURST_TOGGLE] = CS;  _hkKeys[HK_BURST_TOGGLE] = 0x42;  // B
-            _hkMods[HK_EMERGENCY_STOP] = 0; _hkKeys[HK_EMERGENCY_STOP] = 0x1B; // Escape
+            _hkMods[HK_EMERGENCY_STOP] = CS; _hkKeys[HK_EMERGENCY_STOP] = 0x13; // Ctrl+Shift+Pause
             _hkMods[HK_OPEN_SHOTS] = CS;    _hkKeys[HK_OPEN_SHOTS] = 0x4F;    // O — open shots folder
             _hkMods[HK_PRESET_NEXT] = CS;   _hkKeys[HK_PRESET_NEXT] = 0xDD;   // ] — next preset
             _hkMods[HK_PRESET_PREV] = CS;   _hkKeys[HK_PRESET_PREV] = 0xDB;   // [ — prev preset
@@ -1942,6 +1942,15 @@ namespace CrosshairOverlay
                     {
                         _hkMods[i + 1] = (uint)data.HkMods[i];
                         _hkKeys[i + 1] = (uint)data.HkKeys[i];
+                    }
+                    // v2.1.9 migration: bare Escape on emergency-stop steals ESC from all apps.
+                    // Reset to safe default Ctrl+Shift+Pause.
+                    if (HK_EMERGENCY_STOP <= HOTKEY_COUNT
+                        && _hkKeys[HK_EMERGENCY_STOP] == 0x1B
+                        && _hkMods[HK_EMERGENCY_STOP] == 0)
+                    {
+                        _hkMods[HK_EMERGENCY_STOP] = 0x0002 | 0x0004; // Ctrl+Shift
+                        _hkKeys[HK_EMERGENCY_STOP] = 0x13;
                     }
                 }
                 Lang.IsRussian = data.LanguageRu;
