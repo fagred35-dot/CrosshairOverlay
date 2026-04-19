@@ -124,7 +124,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.2.2";
+        internal const string APP_VERSION = "2.3.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -280,6 +280,28 @@ namespace CrosshairOverlay
         internal VideoGalleryForm? _galleryForm;
         internal int _notifPosition = 1; // 0=TL, 1=TR, 2=BL, 3=BR
         internal List<string> _audioApps = new();
+        #endregion
+
+        #region System Monitor
+        internal bool _sysMonVisible = false;
+        internal int _sysMonX = 40;
+        internal int _sysMonY = 40;
+        private SystemMonitorForm? _sysMonForm;
+
+        internal void UpdateSysMonState()
+        {
+            if (_sysMonVisible)
+            {
+                if (_sysMonForm == null || _sysMonForm.IsDisposed)
+                    _sysMonForm = new SystemMonitorForm(this);
+                _sysMonForm.Show();
+            }
+            else
+            {
+                try { _sysMonForm?.Close(); } catch { }
+                _sysMonForm = null;
+            }
+        }
         #endregion
 
         #region Hotkey Bindings
@@ -447,6 +469,9 @@ namespace CrosshairOverlay
 
             // Burst runs as an independent process; start it if it was saved as enabled.
             UpdateBurstState();
+
+            // Show system monitor if persisted as visible.
+            UpdateSysMonState();
         }
 
         internal void PauseTopmost() => _topmostTimer.Stop();
@@ -1899,7 +1924,10 @@ namespace CrosshairOverlay
                     JitterAim = _jitterAim,
                     JitterAimPx = _jitterAimPx,
                     UiTheme = (int)UiThemePresets.Current,
-                    ColorTheme = SettingsForm._currentTheme
+                    ColorTheme = SettingsForm._currentTheme,
+                    SysMonVisible = _sysMonVisible,
+                    SysMonX = _sysMonX,
+                    SysMonY = _sysMonY
                 };
                 File.WriteAllText(_settingsPath, JsonSerializer.Serialize(data));
             }
@@ -2016,6 +2044,9 @@ namespace CrosshairOverlay
                 _jitterAimPx = Math.Clamp(data.JitterAimPx, 1, 20);
                 UiThemePresets.Current = (UiThemePresets.Preset)Math.Clamp(data.UiTheme, 0, 3);
                 SettingsForm._currentTheme = Math.Clamp(data.ColorTheme, 0, 7);
+                _sysMonVisible = data.SysMonVisible;
+                _sysMonX = data.SysMonX;
+                _sysMonY = data.SysMonY;
             }
             catch { }
         }
@@ -2098,6 +2129,10 @@ namespace CrosshairOverlay
             public int JitterAimPx { get; set; } = 2;
             public int UiTheme { get; set; }
             public int ColorTheme { get; set; }
+            // v2.3.0 system monitor
+            public bool SysMonVisible { get; set; }
+            public int SysMonX { get; set; } = 40;
+            public int SysMonY { get; set; } = 40;
         }
 
         #endregion

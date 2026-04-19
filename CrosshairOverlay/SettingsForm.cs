@@ -508,6 +508,12 @@ namespace CrosshairOverlay
                 _overlay._hideInFullscreen,
                 v => _overlay._hideInFullscreen = v,
                 Lang.IsRussian ? "Скрывать прицел когда игра в fullscreen" : "Hide overlay when a fullscreen app is foreground");
+            AddToggle(Lang.IsRussian ? "Монитор системы (CPU/RAM/GPU)" : "System monitor (CPU/RAM/GPU)",
+                _overlay._sysMonVisible,
+                v => { _overlay._sysMonVisible = v; _overlay.UpdateSysMonState(); _overlay.SaveSettings(); },
+                Lang.IsRussian
+                    ? "Плавающее окно с загрузкой CPU/RAM/GPU/Disk/Net в реальном времени. Перетаскивайте мышью."
+                    : "Floating window with live CPU/RAM/GPU/Disk/Net. Drag to move.");
             AddButton(Lang.IsRussian ? "Открыть папку скриншотов" : "Open screenshots folder",
                 () => _overlay.OpenScreenshotsFolder(),
                 "");
@@ -1641,27 +1647,8 @@ namespace CrosshairOverlay
         {
             base.OnMouseWheel(e);
 
-            // Wheel over slider => change its value (#76)
-            int idx = HitTest(e.Location);
-            if (idx >= 0 && idx < _items.Count)
-            {
-                var it = _items[idx];
-                if (it.Type == UiType.Slider || it.Type == UiType.NumericInput)
-                {
-                    int step = Math.Max(1, it.SliderStep) * (e.Delta > 0 ? 1 : -1);
-                    int nv = Math.Clamp(it.SliderValue + step, it.SliderMin, it.SliderMax);
-                    if (nv != it.SliderValue)
-                    {
-                        it.SliderValue = nv;
-                        it.OnSliderChanged?.Invoke(nv);
-                        _overlay._needsStaticRender = true;
-                        _overlay.SaveSettings();
-                        Invalidate();
-                    }
-                    return;
-                }
-            }
-
+            // Wheel scrolls the list. Sliders are changed only by click/drag
+            // (avoids accidental edits when scrolling over a control).
             int viewH = this.Height - HeaderHeight - 4;
             int maxScroll = Math.Max(0, _contentHeight - viewH);
             _scrollY = Math.Clamp(_scrollY - e.Delta / 2, 0, maxScroll);
