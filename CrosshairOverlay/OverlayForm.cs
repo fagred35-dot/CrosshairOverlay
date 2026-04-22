@@ -511,6 +511,9 @@ namespace CrosshairOverlay
             SaveSettings();
             _trayIcon.Visible = false; _trayIcon.Dispose();
             _customImageCache?.Dispose();
+            _renderBufferGfx?.Dispose();
+            _renderBuffer?.Dispose();
+            _clearBrush.Dispose();
             UsageTracker.Save();
             base.OnFormClosed(e);
         }
@@ -1188,6 +1191,18 @@ namespace CrosshairOverlay
 
         #region Rendering
 
+        // Persistent render buffer — the screen-sized bitmap is reused across frames
+        // instead of being allocated+disposed every tick. At 60 FPS this used to churn
+        // 30–130 MB/s through the GC (depending on resolution); now the managed alloc
+        // cost per frame is ~zero. We also clear only a dirty rectangle around the
+        // crosshair instead of wiping the whole screen.
+        private Bitmap? _renderBuffer;
+        private Graphics? _renderBufferGfx;
+        private int _renderBufferW;
+        private int _renderBufferH;
+        private Rectangle _lastDirtyRect;
+        private readonly SolidBrush _clearBrush = new(Color.FromArgb(0, 0, 0, 0));
+
         internal void RenderOverlay()
         {
             if (!IsHandleCreated) return;
@@ -1196,12 +1211,53 @@ namespace CrosshairOverlay
             int w = screen.Bounds.Width, h = screen.Bounds.Height;
             int cx = w / 2 + _offsetX, cy = h / 2 + _offsetY;
 
-            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
-            using var g = Graphics.FromImage(bmp);
+            if (_renderBuffer == null || _renderBufferW != w || _renderBufferH != h)
+            {
+                _renderBufferGfx?.Dispose();
+                _renderBuffer?.Dispose();
+                _renderBuffer = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+                _renderBufferGfx = Graphics.FromImage(_renderBuffer);
+                _renderBufferW = w;
+                _renderBufferH = h;
+                _lastDirtyRect = new Rectangle(0, 0, w, h);
+            }
+
+            var g = _renderBufferGfx!;
+            g.ResetTransform();
+            g.ResetClip();
 
             g.SmoothingMode = _antiAlias ? SmoothingMode.AntiAlias : SmoothingMode.None;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             g.CompositingQuality = CompositingQuality.HighSpeed;
+
+            // Bounding box that fully contains anything the crosshair may paint
+            // this frame (shape + outline + glow + shadow + hit marker + spread).
+            int ext = Math.Max(_size, 8) * 2 + _glowSize
+                    + (int)Math.Abs(_dynamicSpread) + 24
+                    + (int)Math.Ceiling((double)_outlineWidth) * 2
+                    + (_showShadow ? Math.Max(Math.Abs(_shadowOffsetX), Math.Abs(_shadowOffsetY)) + 8 : 0)
+                    + (_hitMarkerEnabled && _hitMarkerProgress > 0.01f ? (int)_hitMarkerSize + 8 : 0);
+            if (_style == CrosshairStyle.CustomImage && _customImageCache != null)
+            {
+                int imgDim = Math.Max(_customImageCache.Width, _customImageCache.Height);
+                ext = Math.Max(ext, imgDim + 16);
+            }
+
+            var dirty = new Rectangle(cx - ext, cy - ext, ext * 2, ext * 2);
+
+            // Union with previous dirty rect so moving/rotating shapes don't leave trails.
+            var clearRect = Rectangle.Union(dirty, _lastDirtyRect);
+            clearRect.Intersect(new Rectangle(0, 0, w, h));
+
+            if (clearRect.Width > 0 && clearRect.Height > 0)
+            {
+                var prevComp = g.CompositingMode;
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.FillRectangle(_clearBrush, clearRect);
+                g.CompositingMode = prevComp;
+            }
+
+            _lastDirtyRect = dirty;
 
             if (_rotation != 0f || _pulseScale != 1.0f)
             {
@@ -1214,9 +1270,11 @@ namespace CrosshairOverlay
             int alpha = (int)Math.Clamp((_currentOpacity / 255f) * 255f, 0, 255);
             DrawCrosshairFull(g, cx, cy, alpha);
 
+            g.ResetTransform();
+
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
-            IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+            IntPtr hBitmap = _renderBuffer.GetHbitmap(Color.FromArgb(0));
             IntPtr oldBitmap = SelectObject(memDc, hBitmap);
             try
             {

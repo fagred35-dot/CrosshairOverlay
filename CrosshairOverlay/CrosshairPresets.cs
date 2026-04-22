@@ -78,12 +78,257 @@ namespace CrosshairOverlay
             ("Orange", Color.FromArgb(255, 140, 20),  Color.FromArgb(255, 50,  80)),
         };
 
+        // ── Curated "Signature" presets ──
+        // Each combines several effects (glow / gradient / shadow / spin / outline / dashed …)
+        // into a single hand-tuned crosshair. Unlike the base templates these are NOT
+        // multiplied by the palette — they ship with their own color story.
+        private static readonly Action<Preset>[] _signatures =
+        {
+            p => { // Phantom Lock — cross+circle, soft cyan→purple glow
+                p.Name = "★ Phantom Lock";
+                p.Style = OverlayForm.CrosshairStyle.CrossWithCircle;
+                p.Size = 22; p.Thickness = 2; p.Gap = 5; p.DotSize = 2;
+                p.Color = Color.FromArgb(120, 200, 255);
+                p.Color2 = Color.FromArgb(180, 120, 255);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 10; p.GlowAlpha = 70;
+                p.OutlineColor = Color.FromArgb(20, 10, 30); p.OutlineWidth = 1.2f;
+            },
+            p => { // Viper Fang — razor-thin X with neon halo
+                p.Name = "★ Viper Fang";
+                p.Style = OverlayForm.CrosshairStyle.XShape;
+                p.Size = 20; p.Thickness = 2; p.Gap = 3; p.DotSize = 2;
+                p.Color = Color.FromArgb(60, 255, 120);
+                p.Color2 = Color.FromArgb(0, 180, 80);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 7; p.GlowAlpha = 90;
+                p.DotPulse = true;
+            },
+            p => { // Halo Ring — double circle with central dot, magenta accent
+                p.Name = "★ Halo Ring";
+                p.Style = OverlayForm.CrosshairStyle.DoubleCircle;
+                p.Size = 22; p.Thickness = 2; p.DotSize = 3; p.Gap = 4;
+                p.Color = Color.FromArgb(255, 60, 200);
+                p.Color2 = Color.FromArgb(140, 0, 255);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 60;
+                p.OutlineColor = Color.FromArgb(20, 0, 20);
+            },
+            p => { // Orion's Eye — sniper crosshairs, ice-blue gradient + shadow
+                p.Name = "★ Orion's Eye";
+                p.Style = OverlayForm.CrosshairStyle.Crosshairs;
+                p.Size = 26; p.Thickness = 1; p.Gap = 7; p.DotSize = 2;
+                p.Color = Color.FromArgb(180, 235, 255);
+                p.Color2 = Color.FromArgb(40, 120, 220);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(10, 20, 40); p.OutlineWidth = 1.4f;
+            },
+            p => { // Nebula Spin — spinning diamond, pink→violet gradient
+                p.Name = "★ Nebula Spin";
+                p.Style = OverlayForm.CrosshairStyle.Diamond;
+                p.Size = 20; p.Thickness = 2; p.DotSize = 2;
+                p.Color = Color.FromArgb(255, 110, 200);
+                p.Color2 = Color.FromArgb(130, 60, 255);
+                p.UseGradient = true; p.Spin = true; p.SpinSpeed = 1.5f;
+                p.GlowEnabled = true; p.GlowSize = 5; p.GlowAlpha = 60;
+            },
+            p => { // Reaper Scythe — fast-spinning chevron, neon red
+                p.Name = "★ Reaper Scythe";
+                p.Style = OverlayForm.CrosshairStyle.Chevron;
+                p.Size = 22; p.Thickness = 3; p.Gap = 4; p.DotSize = 0; p.ShowDot = false;
+                p.Color = Color.FromArgb(255, 50, 70);
+                p.Color2 = Color.FromArgb(255, 150, 40);
+                p.UseGradient = true; p.Spin = true; p.SpinSpeed = 4f;
+                p.OutlineColor = Color.FromArgb(30, 0, 0); p.OutlineWidth = 1.4f;
+                p.ShowShadow = true;
+            },
+            p => { // Sigma Recoil — dashed cross, electric yellow glow
+                p.Name = "★ Sigma Recoil";
+                p.Style = OverlayForm.CrosshairStyle.DashedCross;
+                p.Size = 24; p.Thickness = 2; p.Gap = 5; p.DotSize = 2;
+                p.Color = Color.FromArgb(255, 235, 80);
+                p.Color2 = Color.FromArgb(255, 140, 20);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 8; p.GlowAlpha = 80;
+            },
+            p => { // Samurai T — T-shape with warm serif feel
+                p.Name = "★ Samurai T";
+                p.Style = OverlayForm.CrosshairStyle.TShape;
+                p.Size = 20; p.Thickness = 3; p.Gap = 5; p.DotSize = 2;
+                p.Color = Color.FromArgb(255, 180, 40);
+                p.Color2 = Color.FromArgb(220, 60, 60);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 55;
+                p.OutlineColor = Color.FromArgb(30, 10, 0); p.OutlineWidth = 1.5f;
+            },
+            p => { // Bastion Plus — heavy white plus with deep outline & shadow
+                p.Name = "★ Bastion Plus";
+                p.Style = OverlayForm.CrosshairStyle.Plus;
+                p.Size = 18; p.Thickness = 4; p.Gap = 3; p.DotSize = 2;
+                p.Color = Color.FromArgb(245, 245, 255);
+                p.Color2 = Color.FromArgb(180, 180, 220);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(20, 20, 30); p.OutlineWidth = 1.8f;
+            },
+            p => { // Prism Rainbow — rainbow gradient cross that spins
+                p.Name = "★ Prism Rainbow";
+                p.Style = OverlayForm.CrosshairStyle.Cross;
+                p.Size = 18; p.Thickness = 2; p.Gap = 4; p.DotSize = 2;
+                p.Rainbow = true; p.UseGradient = true; p.Spin = true; p.SpinSpeed = 1.2f;
+                p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 50;
+                p.DotPulse = true;
+            },
+            p => { // Void Pulse — pulsing dot with deep purple halo
+                p.Name = "★ Void Pulse";
+                p.Style = OverlayForm.CrosshairStyle.Dot;
+                p.Size = 12; p.DotSize = 5; p.ShowDot = false;
+                p.Color = Color.FromArgb(200, 120, 255);
+                p.Color2 = Color.FromArgb(60, 0, 120);
+                p.UseGradient = true; p.DotPulse = true;
+                p.GlowEnabled = true; p.GlowSize = 10; p.GlowAlpha = 90;
+            },
+            p => { // Aegis Brackets — bracket+dot with tactical blue
+                p.Name = "★ Aegis Brackets";
+                p.Style = OverlayForm.CrosshairStyle.SquareBrackets;
+                p.Size = 18; p.Thickness = 2; p.DotSize = 2;
+                p.Color = Color.FromArgb(120, 200, 255);
+                p.Color2 = Color.FromArgb(40, 120, 220);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 5; p.GlowAlpha = 60;
+                p.OutlineColor = Color.FromArgb(15, 20, 35); p.OutlineWidth = 1.2f;
+            },
+            p => { // Sniper MK-VII — thin cross + dual circle + dot
+                p.Name = "★ Sniper MK-VII";
+                p.Style = OverlayForm.CrosshairStyle.Crosshairs;
+                p.Size = 30; p.Thickness = 1; p.Gap = 9; p.DotSize = 1;
+                p.Color = Color.FromArgb(255, 90, 80);
+                p.Color2 = Color.FromArgb(255, 200, 60);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(20, 0, 0); p.OutlineWidth = 1f;
+            },
+            p => { // Raptor Arrow — spinning arrow, ember orange
+                p.Name = "★ Raptor Arrow";
+                p.Style = OverlayForm.CrosshairStyle.Arrow;
+                p.Size = 20; p.Thickness = 3; p.DotSize = 2;
+                p.Color = Color.FromArgb(255, 150, 40);
+                p.Color2 = Color.FromArgb(255, 60, 20);
+                p.UseGradient = true; p.Spin = true; p.SpinSpeed = 2.5f;
+                p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 70;
+            },
+            p => { // Oracle Wings — teal wings with pulsing core
+                p.Name = "★ Oracle Wings";
+                p.Style = OverlayForm.CrosshairStyle.Wings;
+                p.Size = 20; p.Thickness = 2; p.Gap = 5; p.DotSize = 3;
+                p.Color = Color.FromArgb(80, 240, 220);
+                p.Color2 = Color.FromArgb(40, 140, 200);
+                p.UseGradient = true; p.DotPulse = true;
+                p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 60;
+            },
+            p => { // Zero Kelvin — ice serif cross with frost gradient
+                p.Name = "★ Zero Kelvin";
+                p.Style = OverlayForm.CrosshairStyle.SerifCross;
+                p.Size = 22; p.Thickness = 2; p.Gap = 5; p.DotSize = 2;
+                p.Color = Color.FromArgb(220, 250, 255);
+                p.Color2 = Color.FromArgb(100, 180, 255);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(15, 30, 60); p.OutlineWidth = 1.4f;
+            },
+            p => { // Crimson Seal — triangle-up with shadow, blood red
+                p.Name = "★ Crimson Seal";
+                p.Style = OverlayForm.CrosshairStyle.TriangleUp;
+                p.Size = 22; p.Thickness = 2; p.DotSize = 2;
+                p.Color = Color.FromArgb(220, 40, 60);
+                p.Color2 = Color.FromArgb(120, 0, 30);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.GlowEnabled = true; p.GlowSize = 5; p.GlowAlpha = 55;
+                p.OutlineColor = Color.FromArgb(30, 0, 10); p.OutlineWidth = 1.3f;
+            },
+            p => { // Zen Dot — minimalist glowing dot with slow breath
+                p.Name = "★ Zen Dot";
+                p.Style = OverlayForm.CrosshairStyle.Dot;
+                p.Size = 10; p.DotSize = 4; p.ShowDot = false;
+                p.Color = Color.FromArgb(250, 250, 255);
+                p.Color2 = Color.FromArgb(200, 220, 255);
+                p.UseGradient = true; p.DotPulse = true;
+                p.GlowEnabled = true; p.GlowSize = 7; p.GlowAlpha = 60;
+                p.OutlineColor = Color.FromArgb(10, 10, 20); p.OutlineWidth = 0.8f;
+            },
+            p => { // Havoc Xross — bold X, red→black, thick outline
+                p.Name = "★ Havoc Xross";
+                p.Style = OverlayForm.CrosshairStyle.XShape;
+                p.Size = 22; p.Thickness = 4; p.Gap = 4; p.DotSize = 0; p.ShowDot = false;
+                p.Color = Color.FromArgb(255, 60, 40);
+                p.Color2 = Color.FromArgb(100, 0, 0);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(25, 0, 0); p.OutlineWidth = 2f;
+            },
+            p => { // Duelist — tight mint cross, classic esports feel
+                p.Name = "★ Duelist";
+                p.Style = OverlayForm.CrosshairStyle.Cross;
+                p.Size = 12; p.Thickness = 2; p.Gap = 2; p.DotSize = 1;
+                p.Color = Color.FromArgb(90, 255, 170);
+                p.Color2 = Color.FromArgb(0, 200, 140);
+                p.UseGradient = true;
+                p.GlowEnabled = true; p.GlowSize = 5; p.GlowAlpha = 55;
+                p.OutlineColor = Color.FromArgb(10, 30, 20); p.OutlineWidth = 1.2f;
+            },
+            p => { // Tessera — double-circle + inner plus for recon
+                p.Name = "★ Tessera";
+                p.Style = OverlayForm.CrosshairStyle.DoubleCircle;
+                p.Size = 26; p.Thickness = 1; p.Gap = 4; p.DotSize = 2;
+                p.Color = Color.FromArgb(180, 255, 220);
+                p.Color2 = Color.FromArgb(80, 180, 255);
+                p.UseGradient = true;
+                p.OutlineColor = Color.FromArgb(10, 30, 40); p.OutlineWidth = 1.2f;
+                p.GlowEnabled = true; p.GlowSize = 4; p.GlowAlpha = 40;
+            },
+            p => { // Synthwave — dashed cross, hot pink→cyan retro
+                p.Name = "★ Synthwave";
+                p.Style = OverlayForm.CrosshairStyle.DashedCross;
+                p.Size = 22; p.Thickness = 2; p.Gap = 5; p.DotSize = 2;
+                p.Color = Color.FromArgb(255, 90, 200);
+                p.Color2 = Color.FromArgb(80, 220, 255);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 9; p.GlowAlpha = 75;
+                p.DotPulse = true;
+            },
+            p => { // Obsidian — thick shadowed plus, graphite
+                p.Name = "★ Obsidian";
+                p.Style = OverlayForm.CrosshairStyle.Plus;
+                p.Size = 16; p.Thickness = 5; p.Gap = 3; p.DotSize = 2;
+                p.Color = Color.FromArgb(30, 30, 40);
+                p.Color2 = Color.FromArgb(80, 90, 110);
+                p.UseGradient = true; p.ShowShadow = true;
+                p.OutlineColor = Color.FromArgb(230, 240, 255); p.OutlineWidth = 1.6f;
+            },
+            p => { // Sakura — wings with pink pulse, aesthetic
+                p.Name = "★ Sakura";
+                p.Style = OverlayForm.CrosshairStyle.Wings;
+                p.Size = 18; p.Thickness = 2; p.Gap = 5; p.DotSize = 4;
+                p.Color = Color.FromArgb(255, 180, 220);
+                p.Color2 = Color.FromArgb(220, 100, 180);
+                p.UseGradient = true; p.DotPulse = true;
+                p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 65;
+            },
+            p => { // Hex Prism — chevron with gradient and serif outline
+                p.Name = "★ Hex Prism";
+                p.Style = OverlayForm.CrosshairStyle.SerifCross;
+                p.Size = 20; p.Thickness = 2; p.Gap = 4; p.DotSize = 2;
+                p.Color = Color.FromArgb(120, 255, 200);
+                p.Color2 = Color.FromArgb(40, 160, 255);
+                p.UseGradient = true; p.GlowEnabled = true; p.GlowSize = 6; p.GlowAlpha = 55;
+                p.OutlineColor = Color.FromArgb(10, 20, 30); p.OutlineWidth = 1.4f;
+            },
+        };
+
         private static List<Preset>? _cache;
         public static List<Preset> All => _cache ??= Build();
 
         private static List<Preset> Build()
         {
-            var list = new List<Preset>(_templates.Length * _palette.Length);
+            var list = new List<Preset>(_templates.Length * _palette.Length + _signatures.Length);
+
+            // Curated signature presets first — they're the showcase pieces.
+            foreach (var cfg in _signatures)
+            {
+                var p = new Preset();
+                cfg(p);
+                list.Add(p);
+            }
+
             foreach (var (tname, cfg) in _templates)
             {
                 foreach (var (cname, c1, c2) in _palette)
