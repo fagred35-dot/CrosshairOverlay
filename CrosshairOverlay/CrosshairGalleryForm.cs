@@ -394,6 +394,19 @@ namespace CrosshairOverlay
                 case OverlayForm.CrosshairStyle.Wings:
                     DrawPreviewWings(g, cx, cy, s, gap, t, ow, brush, outBrush);
                     break;
+                case OverlayForm.CrosshairStyle.DoubleCircle:
+                    DrawPreviewCircle(g, cx, cy, s, t, ow, brush, outBrush);
+                    DrawPreviewCircle(g, cx, cy, s * 0.55f, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.DashedCross:
+                    DrawPreviewDashedCross(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.TriangleUp:
+                    DrawPreviewTriangleUp(g, cx, cy, s, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.SerifCross:
+                    DrawPreviewSerifCross(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
             }
         }
 
@@ -546,6 +559,70 @@ namespace CrosshairOverlay
             }
         }
 
+        private void DrawPreviewDashedCross(Graphics g, int cx, int cy, float s, float gap, float t, float ow, Brush brush, SolidBrush outBrush)
+        {
+            float dash = Math.Max(2f, s / 4f);
+            float step = dash * 1.8f;
+            var segs = new (PointF a, PointF b)[]
+            {
+                // vertical top
+                (new(cx, cy - gap - dash), new(cx, cy - gap - dash - dash)),
+                (new(cx, cy - gap - dash - step), new(cx, cy - gap - dash - step - dash)),
+                // vertical bottom
+                (new(cx, cy + gap), new(cx, cy + gap + dash)),
+                (new(cx, cy + gap + step), new(cx, cy + gap + step + dash)),
+                // horizontal left
+                (new(cx - gap - dash, cy), new(cx - gap - dash - dash, cy)),
+                (new(cx - gap - dash - step, cy), new(cx - gap - dash - step - dash, cy)),
+                // horizontal right
+                (new(cx + gap, cy), new(cx + gap + dash, cy)),
+                (new(cx + gap + step, cy), new(cx + gap + step + dash, cy)),
+            };
+            foreach (var (a, b) in segs)
+            {
+                using var op = new Pen(outBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(op, a, b);
+                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(p, a, b);
+            }
+        }
+
+        private void DrawPreviewTriangleUp(Graphics g, int cx, int cy, float s, float t, float ow, Brush brush, SolidBrush outBrush)
+        {
+            float h = s * 0.9f;
+            var pts = new PointF[] { new(cx - h, cy + h * 0.5f), new(cx, cy - h * 0.7f), new(cx + h, cy + h * 0.5f), new(cx - h, cy + h * 0.5f) };
+            using var op = new Pen(outBrush, t + ow * 2) { LineJoin = LineJoin.Round };
+            g.DrawLines(op, pts);
+            using var p = new Pen(brush, t) { LineJoin = LineJoin.Round };
+            g.DrawLines(p, pts);
+        }
+
+        private void DrawPreviewSerifCross(Graphics g, int cx, int cy, float s, float gap, float t, float ow, Brush brush, SolidBrush outBrush)
+        {
+            // Plain cross…
+            DrawPreviewCross(g, cx, cy, s, gap, t, ow, brush, outBrush, false);
+            // …with small serif ticks at each arm end.
+            float tick = Math.Max(2f, s * 0.22f);
+            var serifs = new (PointF a, PointF b)[]
+            {
+                // top arm
+                (new(cx - tick, cy - gap - s), new(cx + tick, cy - gap - s)),
+                // bottom arm
+                (new(cx - tick, cy + gap + s), new(cx + tick, cy + gap + s)),
+                // left arm
+                (new(cx - gap - s, cy - tick), new(cx - gap - s, cy + tick)),
+                // right arm
+                (new(cx + gap + s, cy - tick), new(cx + gap + s, cy + tick)),
+            };
+            foreach (var (a, b) in serifs)
+            {
+                using var op = new Pen(outBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(op, a, b);
+                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(p, a, b);
+            }
+        }
+
         private void DrawPresetPreview(Graphics g, int x, int y, int cardSize, CrosshairPresets.Preset p)
         {
             int cx = x + cardSize / 2;
@@ -615,6 +692,19 @@ namespace CrosshairOverlay
                     break;
                 case OverlayForm.CrosshairStyle.Wings:
                     DrawPreviewWings(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.DoubleCircle:
+                    DrawPreviewCircle(g, cx, cy, s * 0.85f, t, ow, brush, outBrush);
+                    DrawPreviewCircle(g, cx, cy, s * 0.47f, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.DashedCross:
+                    DrawPreviewDashedCross(g, cx, cy, s, gap, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.TriangleUp:
+                    DrawPreviewTriangleUp(g, cx, cy, s, t, ow, brush, outBrush);
+                    break;
+                case OverlayForm.CrosshairStyle.SerifCross:
+                    DrawPreviewSerifCross(g, cx, cy, s, gap, t, ow, brush, outBrush);
                     break;
             }
 
