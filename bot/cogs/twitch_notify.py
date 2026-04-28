@@ -137,11 +137,10 @@ class TwitchNotify(commands.Cog):
 
                 if stream is None:
                     if row["is_live"]:
-                        update_twitch_status(channel_name, guild_id, False, None)
+                        update_twitch_status(channel_name, guild_id, False, row.get("last_stream_id"))
                     continue
 
                 stream_id = str(stream.get("id"))
-                was_live = bool(row["is_live"])
                 last_stream_id = row.get("last_stream_id")
                 update_twitch_status(channel_name, guild_id, True, stream_id)
 
