@@ -91,7 +91,7 @@ class Fun(commands.Cog):
             embed.set_image(url=post.get("url"))
             embed.set_footer(text="Источник: r/memes")
             await interaction.followup.send(embed=embed)
-        except (aiohttp.ClientError, KeyError, IndexError, TimeoutError) as error:
+        except (aiohttp.ClientError, KeyError, IndexError, TimeoutError, ValueError) as error:
             await interaction.followup.send(f"Докладываю: мем не доставлен: {error}")
 
 
