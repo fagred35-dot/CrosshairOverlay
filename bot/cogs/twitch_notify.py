@@ -142,9 +142,9 @@ class TwitchNotify(commands.Cog):
 
                 stream_id = str(stream.get("id"))
                 last_stream_id = row.get("last_stream_id")
-                update_twitch_status(channel_name, guild_id, True, stream_id)
 
                 if last_stream_id == stream_id:
+                    update_twitch_status(channel_name, guild_id, True, stream_id)
                     continue
 
                 discord_channel = self.bot.get_channel(row["discord_channel_id"])
@@ -154,12 +154,18 @@ class TwitchNotify(commands.Cog):
                 title = stream.get("title", "Стрим начался")
                 game_name = stream.get("game_name") or "категория не указана"
                 url = f"https://www.twitch.tv/{channel_name}"
-                await discord_channel.send(
-                    f"Докладываю: `{channel_name}` вышел в эфир!\n"
-                    f"**{title}**\n"
-                    f"Категория: {game_name}\n"
-                    f"{url}"
-                )
+                try:
+                    await discord_channel.send(
+                        f"Докладываю: `{channel_name}` вышел в эфир!\n"
+                        f"**{title}**\n"
+                        f"Категория: {game_name}\n"
+                        f"{url}"
+                    )
+                except (discord.Forbidden, discord.HTTPException) as error:
+                    print(f"Не удалось отправить Twitch-уведомление для {channel_name}: {error}")
+                    continue
+
+                update_twitch_status(channel_name, guild_id, True, stream_id)
 
     @check_twitch_streams.before_loop
     async def before_check_twitch_streams(self) -> None:
