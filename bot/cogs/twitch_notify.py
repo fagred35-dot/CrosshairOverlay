@@ -145,7 +145,7 @@ class TwitchNotify(commands.Cog):
                 last_stream_id = row.get("last_stream_id")
                 update_twitch_status(channel_name, guild_id, True, stream_id)
 
-                if was_live and last_stream_id == stream_id:
+                if last_stream_id == stream_id:
                     continue
 
                 discord_channel = self.bot.get_channel(row["discord_channel_id"])
