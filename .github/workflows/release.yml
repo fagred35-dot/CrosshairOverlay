@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 2.3.1) — without the leading v'
+        required: true
+      prerelease:
+        description: 'Mark release as pre-release'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & publish CrosshairOverlay
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 6
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/v',''
+            $isPre = 'false'
+          } else {
+            $version = '${{ github.event.inputs.version }}'
+            $isPre = '${{ github.event.inputs.prerelease }}'
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "version not provided" }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[\w.]+)?$') {
+            throw "version '$version' must look like 2.3.1 or 2.3.1-beta1"
+          }
+          $stable = ($version -split '-')[0]
+          "version=$version"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "stable=$stable"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prerelease=$isPre"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "asset=CrosshairOverlay-v$version.exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Version: $version  Tag: v$version  Pre-release: $isPre"
+
+      - name: Sync APP_VERSION constant in source
+        shell: pwsh
+        run: |
+          $file = 'CrosshairOverlay/OverlayForm.cs'
+          $content = Get-Content $file -Raw
+          $new = [System.Text.RegularExpressions.Regex]::Replace(
+            $content,
+            'APP_VERSION\s*=\s*"[^"]+"',
+            'APP_VERSION = "${{ steps.ver.outputs.version }}"')
+          if ($new -eq $content) { throw "APP_VERSION line not found in $file" }
+          Set-Content -Path $file -Value $new -NoNewline
+          Write-Host ((Select-String -Path $file -Pattern 'APP_VERSION').Line)
+
+      - name: Restore
+        run: dotnet restore CrosshairOverlay/CrosshairOverlay.csproj
+
+      - name: Publish self-contained single-file exe
+        shell: pwsh
+        run: |
+          dotnet publish CrosshairOverlay/CrosshairOverlay.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:Version=${{ steps.ver.outputs.stable }} `
+            -p:AssemblyVersion=${{ steps.ver.outputs.stable }}.0 `
+            -p:FileVersion=${{ steps.ver.outputs.stable }}.0 `
+            -p:InformationalVersion=${{ steps.ver.outputs.version }} `
+            -o publish
+
+      - name: Rename artifact and compute SHA-256
+        id: pkg
+        shell: pwsh
+        run: |
+          $src = 'publish/CrosshairOverlay.exe'
+          if (-not (Test-Path $src)) { throw "publish output not found at $src" }
+          $dst = "publish/${{ steps.ver.outputs.asset }}"
+          Move-Item -Force $src $dst
+          $hash = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $dst).Length
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "size=$size"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "path=$dst"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Asset: $dst"
+          Write-Host "Size:  $size bytes"
+          Write-Host "SHA256:$hash"
+
+      - name: Generate release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $sha = '${{ steps.pkg.outputs.sha256 }}'
+          $size = '${{ steps.pkg.outputs.size }}'
+          $asset = '${{ steps.ver.outputs.asset }}'
+          $sizeMb = [math]::Round([double]$size / 1024 / 1024, 1)
+          $body = @"
+          ## Crosshair Overlay v$version
+
+          Self-contained Windows x64 build. .NET 6 runtime included — installation not required, just run the .exe.
+
+          ### Download
+          - **$asset** — $sizeMb MB
+
+          ### Verification
+
+          \`\`\`
+          sha256: $sha
+          \`\`\`
+
+          The in-app updater verifies this hash automatically.
+
+          ### Auto-update
+          Existing installs detect this release within ~8 seconds of launch (or via _Settings → Check for updates_) and prompt to install.
+          "@
+          $body | Out-File -FilePath release_notes.md -Encoding utf8
+          Get-Content release_notes.md
+
+      - name: Upload artifact (CI debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.asset }}
+          path: ${{ steps.pkg.outputs.path }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Crosshair Overlay v${{ steps.ver.outputs.version }}
+          body_path: release_notes.md
+          files: ${{ steps.pkg.outputs.path }}
+          draft: false
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
