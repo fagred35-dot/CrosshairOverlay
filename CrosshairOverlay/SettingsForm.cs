@@ -527,11 +527,35 @@ namespace CrosshairOverlay
                 BuildItems(); ComputeLayout(); Invalidate();
             }, Lang.ResetSettingsTooltip);
             AddButton(Lang.CloseMenu, () => SlideOut(), Lang.CloseMenuTooltip);
+            AddSpacer();
+
+            // Auto-update
+            AddSection(Lang.SectionUpdate);
+            AddToggle(Lang.IsRussian ? "Авто-проверка обновлений при запуске" : "Check for updates on startup",
+                _overlay._autoCheckUpdates,
+                v => { _overlay._autoCheckUpdates = v; _overlay.SaveSettings(); },
+                Lang.IsRussian
+                    ? "Через несколько секунд после запуска тихо проверять GitHub Releases"
+                    : "Quietly query GitHub Releases a few seconds after launch");
+            AddToggle(Lang.IsRussian ? "Включая бета-версии" : "Include pre-releases",
+                _overlay._includePrereleaseUpdates,
+                v => { _overlay._includePrereleaseUpdates = v; _overlay.SaveSettings(); },
+                Lang.IsRussian
+                    ? "Принимать предварительные релизы (помеченные prerelease на GitHub)"
+                    : "Accept pre-release builds marked on GitHub");
             _items.Add(new UiItem
             {
                 Type = UiType.Button, Label = Lang.CheckUpdate, Tooltip = Lang.CheckUpdateTooltip,
                 Height = 38, OnClick = () => _overlay.CheckForUpdateAsync(this)
             });
+            AddInfo(Lang.IsRussian ? "Текущая версия" : "Current version",
+                OverlayForm.APP_VERSION, AccentGlow, "");
+            DateTime lastCheckUtc = _overlay._lastUpdateCheckUtc;
+            string lastCheck = lastCheckUtc == DateTime.MinValue
+                ? (Lang.IsRussian ? "никогда" : "never")
+                : lastCheckUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            AddInfo(Lang.IsRussian ? "Последняя проверка" : "Last check",
+                lastCheck, TextMain, "");
             AddSpacer();
         }
 

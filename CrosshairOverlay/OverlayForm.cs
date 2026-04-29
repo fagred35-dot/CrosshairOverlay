@@ -126,6 +126,13 @@ namespace CrosshairOverlay
         // Auto-update: change these to your GitHub repo
         internal const string APP_VERSION = "2.3.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
+        internal const string GITHUB_REPO_PUBLIC = GITHUB_REPO;
+
+        // Auto-update preferences (persisted in SettingsData).
+        internal bool _autoCheckUpdates = true;
+        internal bool _includePrereleaseUpdates = false;
+        internal string _skippedUpdateVersion = "";
+        internal DateTime _lastUpdateCheckUtc = DateTime.MinValue;
 
         #region Crosshair Settings
         internal CrosshairStyle _style = CrosshairStyle.Cross;
@@ -472,6 +479,24 @@ namespace CrosshairOverlay
 
             // Show system monitor if persisted as visible.
             UpdateSysMonState();
+
+            // Auto-update: clean up stale .update file, then schedule a delayed background check.
+            Updater.CleanupLeftovers();
+            if (_autoCheckUpdates) ScheduleBackgroundUpdateCheck();
+        }
+
+        private void ScheduleBackgroundUpdateCheck()
+        {
+            // Wait a few seconds so the overlay shows up immediately and the user is past
+            // any initial network reconnect after waking the machine.
+            var t = new System.Windows.Forms.Timer { Interval = 8000 };
+            t.Tick += (s, e) =>
+            {
+                t.Stop();
+                t.Dispose();
+                if (!IsDisposed) CheckForUpdateInBackground();
+            };
+            t.Start();
         }
 
         internal void PauseTopmost() => _topmostTimer.Stop();
@@ -1741,6 +1766,8 @@ namespace CrosshairOverlay
             _trayMenu.Items.Add(Lang.TraySettings, null, (s, e) => OpenSettings());
             _trayMenu.Items.Add(Lang.TrayReset, null, (s, e) => ResetToDefaults());
             _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add(Lang.CheckUpdate, null, (s, e) => CheckForUpdateAsync(_settingsForm));
+            _trayMenu.Items.Add(new ToolStripSeparator());
             _trayMenu.Items.Add(Lang.TrayExit, null, (s, e) => { SaveSettings(); Application.Exit(); });
 
             _trayIcon = new NotifyIcon
@@ -1795,69 +1822,238 @@ namespace CrosshairOverlay
             _trayMenu.Items.Add(Lang.TraySettings, null, (s, e) => OpenSettings());
             _trayMenu.Items.Add(Lang.TrayReset, null, (s, e) => ResetToDefaults());
             _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add(Lang.CheckUpdate, null, (s, e) => CheckForUpdateAsync(_settingsForm));
+            _trayMenu.Items.Add(new ToolStripSeparator());
             _trayMenu.Items.Add(Lang.TrayExit, null, (s, e) => { SaveSettings(); Application.Exit(); });
         }
 
+        /// <summary>
+        /// Manual update check (from Settings / tray). Always reports the result to the user.
+        /// </summary>
         internal async void CheckForUpdateAsync(Form? owner)
         {
+            await RunUpdateCheckAsync(owner, silent: false).ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// Background check fired shortly after launch. Stays silent if there's nothing
+        /// new, the network is down, or the user has skipped the latest version.
+        /// </summary>
+        internal async void CheckForUpdateInBackground()
+        {
+            await RunUpdateCheckAsync(owner: null, silent: true).ConfigureAwait(true);
+        }
+
+        private bool _updateCheckInFlight;
+
+        private async Task RunUpdateCheckAsync(Form? owner, bool silent)
+        {
+            if (_updateCheckInFlight) return;
+            _updateCheckInFlight = true;
             try
             {
-                using var http = new HttpClient();
-                http.DefaultRequestHeaders.UserAgent.ParseAdd("CrosshairOverlay/" + APP_VERSION);
-                var url = $"https://api.github.com/repos/{GITHUB_REPO}/releases/latest";
-                var json = await http.GetStringAsync(url);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                var tag = root.GetProperty("tag_name").GetString()?.TrimStart('v', 'V') ?? "";
-                if (string.Compare(tag, APP_VERSION, StringComparison.OrdinalIgnoreCase) <= 0)
+                _lastUpdateCheckUtc = DateTime.UtcNow;
+                SaveSettings();
+
+                Updater.ReleaseInfo? latest;
+                try
                 {
-                    MessageBox.Show(owner, Lang.IsRussian ? $"У вас актуальная версия ({APP_VERSION})." 
-                        : $"You are up to date ({APP_VERSION}).", "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
+                    using var ctsFetch = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                    latest = await Updater.FetchLatestAsync(_includePrereleaseUpdates, ctsFetch.Token)
+                        .ConfigureAwait(true);
                 }
-                var assets = root.GetProperty("assets");
-                string? downloadUrl = null;
-                foreach (var asset in assets.EnumerateArray())
+                catch (Exception ex)
                 {
-                    var name = asset.GetProperty("name").GetString() ?? "";
-                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    if (!silent)
                     {
-                        downloadUrl = asset.GetProperty("browser_download_url").GetString();
-                        break;
+                        MessageBox.Show(owner,
+                            (Lang.IsRussian ? "Не удалось проверить обновления: " : "Update check failed: ") + ex.Message,
+                            "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
-                }
-                if (downloadUrl == null)
-                {
-                    MessageBox.Show(owner, Lang.IsRussian ? "Не найден .exe в релизе." : "No .exe asset found in release.",
-                        "Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                var msg = Lang.IsRussian
-                    ? $"Доступна новая версия {tag}!\nТекущая: {APP_VERSION}\n\nОбновить сейчас?"
-                    : $"New version {tag} available!\nCurrent: {APP_VERSION}\n\nUpdate now?";
-                if (MessageBox.Show(owner, msg, "Update", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+
+                if (latest == null || latest.Version == null)
+                {
+                    if (!silent)
+                    {
+                        MessageBox.Show(owner,
+                            Lang.IsRussian
+                                ? "В последнем релизе нет .exe-сборки."
+                                : "Latest release has no .exe asset.",
+                            "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    return;
+                }
+
+                if (!Updater.IsNewerThanCurrent(latest))
+                {
+                    if (!silent)
+                    {
+                        MessageBox.Show(owner,
+                            (Lang.IsRussian
+                                ? $"У вас актуальная версия ({APP_VERSION})."
+                                : $"You are up to date ({APP_VERSION})."),
+                            "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    return;
+                }
+
+                // User asked to skip exactly this version → stay silent in background mode.
+                if (silent && string.Equals(_skippedUpdateVersion, latest.Tag, StringComparison.OrdinalIgnoreCase))
                     return;
 
-                var exePath = Application.ExecutablePath;
-                var tempPath = exePath + ".update";
-                var bytes = await http.GetByteArrayAsync(downloadUrl);
-                File.WriteAllBytes(tempPath, bytes);
-                // Replace on next launch via a short batch script
-                var batPath = Path.Combine(Path.GetTempPath(), "crosshair_update.bat");
-                File.WriteAllText(batPath,
-                    $"@echo off\r\n" +
-                    $"timeout /t 2 /nobreak >nul\r\n" +
-                    $"move /Y \"{tempPath}\" \"{exePath}\"\r\n" +
-                    $"start \"\" \"{exePath}\"\r\n" +
-                    $"del \"%~f0\"\r\n");
-                Process.Start(new ProcessStartInfo(batPath) { CreateNoWindow = true, UseShellExecute = false });
+                if (!ConfirmInstall(owner, latest, out bool skipThisVersion))
+                {
+                    if (skipThisVersion)
+                    {
+                        _skippedUpdateVersion = latest.Tag ?? "";
+                        SaveSettings();
+                    }
+                    return;
+                }
+                _skippedUpdateVersion = "";
+                SaveSettings();
+
+                await DownloadAndInstallAsync(owner, latest).ConfigureAwait(true);
+            }
+            finally
+            {
+                _updateCheckInFlight = false;
+            }
+        }
+
+        private static bool ConfirmInstall(Form? owner, Updater.ReleaseInfo r, out bool skipThisVersion)
+        {
+            skipThisVersion = false;
+
+            string title = Lang.IsRussian ? "Доступно обновление" : "Update available";
+            string sizeStr = r.Size > 0 ? $" ({r.Size / 1024.0 / 1024.0:F1} MB)" : "";
+            string notes = string.IsNullOrWhiteSpace(r.Notes) ? "" : "\n\n" + Truncate(r.Notes, 600);
+
+            string text = (Lang.IsRussian
+                ? $"Новая версия {r.Tag} доступна.\nТекущая: {APP_VERSION}\nФайл: {r.AssetName}{sizeStr}\n\nОбновить сейчас?"
+                : $"Version {r.Tag} is available.\nCurrent: {APP_VERSION}\nFile: {r.AssetName}{sizeStr}\n\nUpdate now?")
+                + notes
+                + (Lang.IsRussian
+                    ? "\n\nДа — обновить · Нет — позже · Отмена — пропустить эту версию"
+                    : "\n\nYes — update · No — later · Cancel — skip this version");
+
+            var result = MessageBox.Show(owner, text, title,
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            if (result == DialogResult.Yes) return true;
+            if (result == DialogResult.Cancel) skipThisVersion = true;
+            return false;
+        }
+
+        private static string Truncate(string s, int max)
+            => s.Length <= max ? s : s.Substring(0, max) + "…";
+
+        private async Task DownloadAndInstallAsync(Form? owner, Updater.ReleaseInfo r)
+        {
+            string exePath = Application.ExecutablePath;
+            string updatePath = exePath + ".update";
+
+            using var dlg = new UpdateProgressForm(
+                Lang.IsRussian ? "Загрузка обновления" : "Downloading update");
+            dlg.SetStatus(r.AssetName);
+
+            var progress = new Progress<(long received, long total)>(
+                p => dlg.ReportProgress(p.received, p.total));
+
+            // Run download on the thread-pool while the modal dialog spins.
+            var token = dlg.CancellationToken;
+            var task = Task.Run(async () =>
+            {
+                try
+                {
+                    await Updater.DownloadAsync(r.DownloadUrl, updatePath, progress, token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Close dialog from UI thread.
+                    if (dlg.IsHandleCreated && !dlg.IsDisposed)
+                        dlg.BeginInvoke(new Action(() => { try { dlg.MarkDone(); } catch { } }));
+                }
+            });
+
+            dlg.ShowDialog(owner);
+
+            try { await task.ConfigureAwait(true); }
+            catch (OperationCanceledException)
+            {
+                TryDelete(updatePath);
+                return;
+            }
+            catch (Exception ex)
+            {
+                TryDelete(updatePath);
+                MessageBox.Show(owner,
+                    (Lang.IsRussian ? "Ошибка загрузки: " : "Download error: ") + ex.Message,
+                    "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (token.IsCancellationRequested)
+            {
+                TryDelete(updatePath);
+                return;
+            }
+
+            if (!Updater.VerifyExecutable(updatePath, r.Size, r.Sha256, out string verifyErr))
+            {
+                TryDelete(updatePath);
+                MessageBox.Show(owner,
+                    (Lang.IsRussian ? "Проверка обновления не пройдена: " : "Update verification failed: ") + verifyErr,
+                    "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // Quick write-permission probe so we can warn cleanly instead of failing in the helper script.
+            if (!CanReplaceExecutable(exePath))
+            {
+                TryDelete(updatePath);
+                MessageBox.Show(owner,
+                    Lang.IsRussian
+                        ? "Нет прав на замену исполняемого файла. Запустите программу от имени администратора или переместите её в папку, доступную для записи."
+                        : "Can't replace the executable. Run as administrator or move the app to a writable folder.",
+                    "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                Updater.ScheduleSwapAndRestart(updatePath, exePath);
+                SaveSettings();
                 Application.Exit();
             }
             catch (Exception ex)
             {
-                MessageBox.Show(owner, (Lang.IsRussian ? "Ошибка обновления: " : "Update error: ") + ex.Message,
-                    "Update", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                TryDelete(updatePath);
+                MessageBox.Show(owner,
+                    (Lang.IsRussian ? "Не удалось запустить установщик: " : "Failed to start updater: ") + ex.Message,
+                    "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        private static bool CanReplaceExecutable(string exePath)
+        {
+            try
+            {
+                string? dir = Path.GetDirectoryName(exePath);
+                if (string.IsNullOrEmpty(dir)) return false;
+                string probe = Path.Combine(dir, ".update_write_probe.tmp");
+                File.WriteAllText(probe, "ok");
+                File.Delete(probe);
+                return true;
+            }
+            catch { return false; }
         }
 
         internal void RequestRender() { _needsStaticRender = true; }
@@ -1985,7 +2181,12 @@ namespace CrosshairOverlay
                     ColorTheme = SettingsForm._currentTheme,
                     SysMonVisible = _sysMonVisible,
                     SysMonX = _sysMonX,
-                    SysMonY = _sysMonY
+                    SysMonY = _sysMonY,
+                    AutoCheckUpdates = _autoCheckUpdates,
+                    IncludePrereleaseUpdates = _includePrereleaseUpdates,
+                    SkippedUpdateVersion = _skippedUpdateVersion ?? "",
+                    LastUpdateCheckUtc = _lastUpdateCheckUtc == DateTime.MinValue
+                        ? "" : _lastUpdateCheckUtc.ToString("O")
                 };
                 File.WriteAllText(_settingsPath, JsonSerializer.Serialize(data));
             }
@@ -2105,6 +2306,16 @@ namespace CrosshairOverlay
                 _sysMonVisible = data.SysMonVisible;
                 _sysMonX = data.SysMonX;
                 _sysMonY = data.SysMonY;
+                _autoCheckUpdates = data.AutoCheckUpdates;
+                _includePrereleaseUpdates = data.IncludePrereleaseUpdates;
+                _skippedUpdateVersion = data.SkippedUpdateVersion ?? "";
+                if (!string.IsNullOrEmpty(data.LastUpdateCheckUtc)
+                    && DateTime.TryParse(data.LastUpdateCheckUtc,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.RoundtripKind, out var dt))
+                {
+                    _lastUpdateCheckUtc = dt;
+                }
             }
             catch { }
         }
@@ -2191,6 +2402,11 @@ namespace CrosshairOverlay
             public bool SysMonVisible { get; set; }
             public int SysMonX { get; set; } = 40;
             public int SysMonY { get; set; } = 40;
+            // Auto-update
+            public bool AutoCheckUpdates { get; set; } = true;
+            public bool IncludePrereleaseUpdates { get; set; } = false;
+            public string SkippedUpdateVersion { get; set; } = "";
+            public string LastUpdateCheckUtc { get; set; } = "";
         }
 
         #endregion
