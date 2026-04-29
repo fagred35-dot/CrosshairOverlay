@@ -15,8 +15,17 @@
     <ApplicationIcon></ApplicationIcon>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Version metadata. Override at publish time with -p:Version=2.3.1 / -p:AssemblyVersion=2.3.1.0 etc. -->
+    <Version>2.3.0</Version>
     <AssemblyVersion>2.3.0.0</AssemblyVersion>
     <FileVersion>2.3.0.0</FileVersion>
+    <InformationalVersion>2.3.0</InformationalVersion>
+    <Product>Crosshair Overlay</Product>
+    <AssemblyTitle>Crosshair Overlay</AssemblyTitle>
+    <Description>Fullscreen crosshair overlay + auto-clicker for Windows.</Description>
+    <Company>fagred35</Company>
+    <Authors>fagred35</Authors>
+    <Copyright>Copyright © fagred35</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

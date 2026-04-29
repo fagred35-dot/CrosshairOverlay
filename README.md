@@ -80,6 +80,28 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
 ---
 
+## Релизы и авто-обновление
+
+Релизы собираются автоматически workflow-ом `.github/workflows/release.yml`.
+
+**Как выпустить новую версию:**
+
+```bash
+git tag v2.3.1
+git push origin v2.3.1
+```
+
+…и подождать ~3 минуты. GitHub Actions:
+1. Соберёт self-contained `CrosshairOverlay-v2.3.1.exe` (с версией в имени и в свойствах файла).
+2. Подсчитает SHA-256 и положит его в release notes.
+3. Создаст GitHub Release и приложит .exe.
+
+После этого все запущенные копии приложения через ~8 секунд после старта (или по кнопке *Settings → Check for updates*) увидят новую версию, скачают и обновятся автоматически.
+
+Альтернатива: `Actions → Release → Run workflow` и вручную ввести версию.
+
+---
+
 ## Технологии
 
 - C# / .NET 6.0 / WinForms
