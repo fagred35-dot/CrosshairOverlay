@@ -703,12 +703,19 @@ namespace CrosshairOverlay
 
         private void AddStyle()
         {
+            // One icon per CrosshairStyle value; rows wrap, so size the item to fit.
+            var names = new[] { "✚", "○", "●", "⊕", "‹", "T", "◇", "▲", "+", "✕", "▽", "⊹", "[ ]", "∨", "◎", "┆", "△", "✛", "✦", "🖼" };
+            int perRow = Math.Max(1, (PanelWidth - ItemPadX * 2 - 12) / 22);
+            int rows = (names.Length + perRow - 1) / perRow;
             _items.Add(new UiItem
             {
                 Type = UiType.StyleSelector, Label = Lang.CrosshairStyle,
-                Tooltip = Lang.CrosshairStyleTooltip, Height = 68,
+                Tooltip = Lang.CrosshairStyleTooltip, Height = 26 + rows * 26 + 6,
                 SelectedStyle = (int)_overlay._style,
-                StyleNames = new[] { "✚", "○", "●", "⊕", "‹", "T", "◇", "▲", "+", "✕", "▽", "⊹", "[ ]", "∨", "🖼" },
+                // One icon per CrosshairStyle enum value, in enum order.
+                // (Pre-2.4 this array was 15 long while the enum had 19 values, so the
+                // last styles were unreachable and "🖼" actually selected DoubleCircle.)
+                StyleNames = names,
                 OnStyleChanged = v =>
                 {
                     _overlay._style = (OverlayForm.CrosshairStyle)v;
@@ -1256,19 +1263,21 @@ namespace CrosshairOverlay
             }
             else
             {
-                // Original text-based style buttons
+                // Original text-based style buttons — v2.4: wraps onto extra rows
+                // so every style stays reachable (it used to clip after 13 icons).
                 using var textBrush = new SolidBrush(TextMain);
                 g.DrawString(item.Label, _fontControl, textBrush, x + 10, y + 4);
 
                 int btnW = 20, btnH = 22, btnY = y + 26, gap = 2, startX = x + 6;
+                int perRow = Math.Max(1, (w - 12) / (btnW + gap));
 
                 for (int si = 0; si < item.StyleNames.Length; si++)
                 {
-                    int bx = startX + si * (btnW + gap);
-                    if (bx + btnW > x + w) break;
+                    int bx = startX + (si % perRow) * (btnW + gap);
+                    int by = btnY + (si / perRow) * (btnH + 4);
 
                     bool selected = si == item.SelectedStyle;
-                    var btnRect = new Rectangle(bx, btnY, btnW, btnH);
+                    var btnRect = new Rectangle(bx, by, btnW, btnH);
                     using var btnPath = RoundRect(btnRect, 8);
 
                     if (selected)
@@ -1570,6 +1579,7 @@ namespace CrosshairOverlay
                         int clickY = localY;
 
                         int btnW, btnH, gap, startX, btnY;
+                        int perRow = int.MaxValue;
                         if (item.IsThemeSelector)
                         {
                             btnW = 32; btnH = 28; gap = 4;
@@ -1582,22 +1592,22 @@ namespace CrosshairOverlay
                         {
                             btnW = 20; gap = 2; startX = ItemPadX + 6;
                             btnH = 22; btnY = item.Y + 26;
+                            // Must mirror the wrapping math in DrawStyleItem.
+                            perRow = Math.Max(1, (PanelWidth - ItemPadX * 2 - 12) / (btnW + gap));
                         }
 
-                        if (clickY >= btnY && clickY <= btnY + btnH)
+                        for (int si = 0; si < item.StyleNames.Length; si++)
                         {
-                            for (int si = 0; si < item.StyleNames.Length; si++)
+                            int bx = startX + (si % perRow) * (btnW + gap);
+                            int by = btnY + (si / perRow) * (btnH + 4);
+                            if (clickX >= bx && clickX <= bx + btnW && clickY >= by && clickY <= by + btnH)
                             {
-                                int bx = startX + si * (btnW + gap);
-                                if (clickX >= bx && clickX <= bx + btnW)
-                                {
-                                    item.SelectedStyle = si;
-                                    item.OnStyleChanged?.Invoke(si);
-                                    _overlay._needsStaticRender = true;
-                                    _overlay.SaveSettings();
-                                    Invalidate();
-                                    break;
-                                }
+                                item.SelectedStyle = si;
+                                item.OnStyleChanged?.Invoke(si);
+                                _overlay._needsStaticRender = true;
+                                _overlay.SaveSettings();
+                                Invalidate();
+                                break;
                             }
                         }
                     }
