@@ -9,7 +9,9 @@
 ## Возможности
 
 ### Прицел
-- **15 стилей прицела:** Cross, Circle, Dot, CrossWithCircle, Chevron, T-Shape, Diamond, Arrow, Plus, X-Shape, Triangle, Crosshairs (снайперский), Square Brackets, Wings, Custom Image
+- **19 стилей прицела:** Cross, Circle, Dot, CrossWithCircle, Chevron, T-Shape, Diamond, Arrow, Plus, X-Shape, Triangle, Crosshairs (снайперский), Square Brackets, Wings, Double Circle, Dashed Cross, Triangle Up, Serif Cross + Custom Image
+- **🎨 Авторская галерея (новое в 2.4):** 50 уникальных прицелов, нарисованных вручную — каждый со своей формой и палитрой (Kunai, Lotus, Shuriken, Radar, Atom, Phoenix, Eclipse и другие)
+- **Галерея с избранным** — ПКМ по карточке добавляет прицел в «★ Избранное», кнопка ⚄ выбирает случайный прицел
 - **Своя картинка** — загрузи PNG/JPG и используй как прицел
 - **Ручной поворот** (0–360°) и автовращение с настройкой скорости
 - **Цвет, градиент, радужный режим**
@@ -77,6 +79,15 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
 Выходной файл: `bin/Release/net6.0-windows/win-x64/publish/CrosshairOverlay.exe`
+
+---
+
+## Производительность (2.4)
+
+- **Zero-copy рендеринг:** GDI+ рисует прямо в DIB-секцию, которая передаётся в `UpdateLayeredWindow` без копирования — убрано полноэкранное копирование пикселей (8–33 МБ на кадр при 1080p–4K) и создание/удаление 4 GDI-объектов каждый кадр
+- **Кэш миниатюр** в галерее — картинки сообщества декодируются один раз, а не при каждой перерисовке
+- **Отрисовка только видимого** — карточки за пределами окна галереи не рисуются
+- Перья (Pen) в циклах отрисовки переиспользуются вместо создания на каждую линию
 
 ---
 

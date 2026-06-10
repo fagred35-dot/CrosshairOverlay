@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -24,11 +25,18 @@ namespace CrosshairOverlay
         private const int CardSize = 90;
         private const int CardGap = 10;
         private const int PadX = 20;
-        private const int PadTop = 20;
+        private const int PadTop = 44;   // content starts below the title row
         private const int SectionH = 36;
 
         // Hit-test index ranges (so sections can grow without collisions)
+        private const int ArtIndexBase = 1000;    // v2.4: 50 hand-designed crosshairs
         private const int PresetIndexBase = 2000;
+        private const int RandomButtonId = -998;
+
+        // v2.4: community image previews used to be decoded from disk on every
+        // paint (each hover repaint = full PNG decode per card). Cache the scaled
+        // thumbnails instead.
+        private readonly Dictionary<string, Bitmap> _thumbCache = new();
 
         // Standard styles (all except CustomImage)
         private static readonly OverlayForm.CrosshairStyle[] StandardStyles =
@@ -110,64 +118,91 @@ namespace CrosshairOverlay
             }
         }
 
+        // ── v2.4 unified section model ─────────────────────────────────
+        // Paint and hit-testing used to duplicate the same layout math per
+        // section (an easy way to desync them). Both now walk this single list.
+        // Card ids: 0..13 standard · 14+ community (last = add button) ·
+        // 1000+ art · 2000+ presets. Favorites reuse the original ids.
+
+        private List<(string Title, List<int> Ids)> BuildSections()
+        {
+            var sections = new List<(string, List<int>)>();
+
+            var favs = new List<int>();
+            foreach (var key in _overlay._galleryFavorites)
+            {
+                int id = FavKeyToId(key);
+                if (id >= 0) favs.Add(id);
+            }
+            if (favs.Count > 0)
+                sections.Add((Lang.GalleryFavorites, favs));
+
+            var std = new List<int>();
+            for (int i = 0; i < StandardStyles.Length; i++) std.Add(i);
+            sections.Add((Lang.GalleryStandard, std));
+
+            var art = new List<int>();
+            for (int i = 0; i < ArtCrosshairs.Count; i++) art.Add(ArtIndexBase + i);
+            sections.Add((Lang.GalleryArt, art));
+
+            var com = new List<int>();
+            for (int i = 0; i <= _communityImages.Count; i++) com.Add(StandardStyles.Length + i);
+            sections.Add((Lang.GalleryCommunity, com));
+
+            var pre = new List<int>();
+            for (int i = 0; i < CrosshairPresets.All.Count; i++) pre.Add(PresetIndexBase + i);
+            sections.Add((Lang.GalleryPresets, pre));
+
+            return sections;
+        }
+
+        private string? IdToFavKey(int id)
+        {
+            if (id >= PresetIndexBase) return "preset:" + (id - PresetIndexBase);
+            if (id >= ArtIndexBase) return "art:" + (id - ArtIndexBase);
+            if (id >= 0 && id < StandardStyles.Length) return "std:" + id;
+            return null; // community images / add button are not favoritable
+        }
+
+        private int FavKeyToId(string key)
+        {
+            int sep = key.IndexOf(':');
+            if (sep <= 0 || !int.TryParse(key[(sep + 1)..], out int i) || i < 0) return -1;
+            return key[..sep] switch
+            {
+                "std" when i < StandardStyles.Length => i,
+                "art" when i < ArtCrosshairs.Count => ArtIndexBase + i,
+                "preset" when i < CrosshairPresets.All.Count => PresetIndexBase + i,
+                _ => -1
+            };
+        }
+
+        private Rectangle RandomButtonRect => new(Width - 36 - 30, 6, 26, 24);
+
         private int GetCardIndex(int x, int y)
         {
             int ly = y + _scrollY;
-            int totalItems = StandardStyles.Length + 1 + _communityImages.Count + 1; // +1 add button per section? nah
+            int curY = PadTop;
 
-            // Standard section
-            int curY = PadTop + SectionH;
-            int stdRows = (StandardStyles.Length + Cols - 1) / Cols;
-            int stdEndY = curY + stdRows * (CardSize + CardGap);
-
-            if (ly >= curY && ly < stdEndY)
+            foreach (var (_, ids) in BuildSections())
             {
-                int row = (ly - curY) / (CardSize + CardGap);
-                int col = (x - PadX) / (CardSize + CardGap);
-                if (col >= 0 && col < Cols && x >= PadX && x < PadX + Cols * (CardSize + CardGap))
+                curY += SectionH;
+                int rows = (ids.Count + Cols - 1) / Cols;
+                int endY = curY + rows * (CardSize + CardGap);
+
+                if (ly >= curY && ly < endY)
                 {
-                    int idx = row * Cols + col;
-                    if (idx < StandardStyles.Length)
-                        return idx; // 0..13 = standard
+                    int row = (ly - curY) / (CardSize + CardGap);
+                    int col = (x - PadX) / (CardSize + CardGap);
+                    if (col >= 0 && col < Cols && x >= PadX && x < PadX + Cols * (CardSize + CardGap))
+                    {
+                        int idx = row * Cols + col;
+                        if (idx < ids.Count) return ids[idx];
+                    }
+                    return -1;
                 }
+                curY = endY;
             }
-
-            // Community section
-            curY = stdEndY + SectionH;
-            int comCount = _communityImages.Count + 1; // +1 for "add" button
-            int comRows = (comCount + Cols - 1) / Cols;
-            int comEndY = curY + comRows * (CardSize + CardGap);
-
-            if (ly >= curY && ly < comEndY)
-            {
-                int row = (ly - curY) / (CardSize + CardGap);
-                int col = (x - PadX) / (CardSize + CardGap);
-                if (col >= 0 && col < Cols && x >= PadX && x < PadX + Cols * (CardSize + CardGap))
-                {
-                    int idx = row * Cols + col;
-                    if (idx < comCount)
-                        return StandardStyles.Length + idx; // 14+ = community, last = add button
-                }
-            }
-
-            // Presets section
-            curY = comEndY + SectionH;
-            int preCount = CrosshairPresets.All.Count;
-            int preRows = (preCount + Cols - 1) / Cols;
-            int preEndY = curY + preRows * (CardSize + CardGap);
-
-            if (ly >= curY && ly < preEndY)
-            {
-                int row = (ly - curY) / (CardSize + CardGap);
-                int col = (x - PadX) / (CardSize + CardGap);
-                if (col >= 0 && col < Cols && x >= PadX && x < PadX + Cols * (CardSize + CardGap))
-                {
-                    int idx = row * Cols + col;
-                    if (idx < preCount)
-                        return PresetIndexBase + idx;
-                }
-            }
-
             return -1;
         }
 
@@ -192,98 +227,120 @@ namespace CrosshairOverlay
             using var titleBrush = new SolidBrush(Color.FromArgb(235, 228, 245));
             g.DrawString(Lang.CrosshairGalleryTitle, _fontTitle, titleBrush, PadX, 8);
 
+            // Random crosshair button (dice), pinned next to the close button.
+            var rndRect = RandomButtonRect;
+            using (var rndBg = new SolidBrush(_hoverIndex == RandomButtonId
+                ? Color.FromArgb(90, SettingsForm.GetAccent())
+                : Color.FromArgb(40, 80, 60, 140)))
+            using (var rndPath = RoundRect(rndRect, 6))
+                g.FillPath(rndBg, rndPath);
+            using (var rndBrush = new SolidBrush(_hoverIndex == RandomButtonId
+                ? Color.White : Color.FromArgb(200, 200, 190, 230)))
+            {
+                var sfRnd = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString("⚄", _fontSection, rndBrush, rndRect, sfRnd);
+            }
+
             g.TranslateTransform(0, -_scrollY);
             int curY = PadTop;
+            int viewTop = _scrollY;
+            int viewBottom = _scrollY + ClientSize.Height;
 
-            // ── STANDARD SECTION ──
             using var secBrush = new SolidBrush(SettingsForm.GetAccent());
-            g.DrawString(Lang.GalleryStandard, _fontSection, secBrush, PadX, curY + 4);
-            curY += SectionH;
+            using var lblBrush = new SolidBrush(Color.FromArgb(160, 180, 170, 210));
+            using var lblSelBrush = new SolidBrush(Color.White);
+            using var starBrush = new SolidBrush(Color.FromArgb(230, 255, 200, 60));
+            var sfCenter = new StringFormat { Alignment = StringAlignment.Center };
+            var sfLabel = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
 
-            for (int i = 0; i < StandardStyles.Length; i++)
+            foreach (var (title, ids) in BuildSections())
             {
-                int row = i / Cols, col = i % Cols;
-                int cx = PadX + col * (CardSize + CardGap);
-                int cy = curY + row * (CardSize + CardGap);
-                bool hover = _hoverIndex == i;
-                bool selected = _overlay._style == StandardStyles[i];
-                DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
-                DrawCrosshairPreview(g, cx, cy, CardSize, StandardStyles[i]);
-                // Label
-                using var lblBrush = new SolidBrush(selected ? Color.White : Color.FromArgb(160, 180, 170, 210));
-                var sf = new StringFormat { Alignment = StringAlignment.Center };
-                g.DrawString(StyleLabels[i], _fontLabel, lblBrush, cx + CardSize / 2, cy + CardSize - 14, sf);
-            }
+                if (curY + SectionH >= viewTop && curY <= viewBottom)
+                    g.DrawString(title, _fontSection, secBrush, PadX, curY + 4);
+                curY += SectionH;
 
-            int stdRows = (StandardStyles.Length + Cols - 1) / Cols;
-            curY += stdRows * (CardSize + CardGap);
+                int rows = (ids.Count + Cols - 1) / Cols;
+                int endY = curY + rows * (CardSize + CardGap);
 
-            // ── COMMUNITY SECTION ──
-            g.DrawString(Lang.GalleryCommunity, _fontSection, secBrush, PadX, curY + 4);
-            curY += SectionH;
-
-            int comCount = _communityImages.Count + 1;
-            for (int i = 0; i < comCount; i++)
-            {
-                int row = i / Cols, col = i % Cols;
-                int cx = PadX + col * (CardSize + CardGap);
-                int cy = curY + row * (CardSize + CardGap);
-                int globalIdx = StandardStyles.Length + i;
-                bool hover = _hoverIndex == globalIdx;
-
-                if (i < _communityImages.Count)
+                // v2.4 viewport culling: with ~290 cards (presets + art) painting
+                // everything on each hover repaint is wasteful — draw only rows
+                // that intersect the visible area.
+                if (endY < viewTop || curY > viewBottom)
                 {
-                    bool selected = _overlay._style == OverlayForm.CrosshairStyle.CustomImage
-                        && _overlay._customImagePath == _communityImages[i];
-                    DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
-                    DrawImagePreview(g, cx, cy, CardSize, _communityImages[i]);
-                    // Filename label
-                    string name = Path.GetFileNameWithoutExtension(_communityImages[i]);
-                    if (name.Length > 10) name = name[..9] + "…";
-                    using var lblBrush2 = new SolidBrush(Color.FromArgb(160, 180, 170, 210));
-                    var sf2 = new StringFormat { Alignment = StringAlignment.Center };
-                    g.DrawString(name, _fontLabel, lblBrush2, cx + CardSize / 2, cy + CardSize - 14, sf2);
+                    curY = endY;
+                    continue;
                 }
-                else
+
+                for (int idx = 0; idx < ids.Count; idx++)
                 {
-                    // "Add" button
-                    DrawCard(g, cx, cy, CardSize, CardSize, hover, false);
-                    using var addBrush = new SolidBrush(hover ? Color.FromArgb(200, 180, 140, 255) : Color.FromArgb(100, 130, 100, 180));
-                    var sf3 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    using var addFont = new Font("Segoe UI", 28f, FontStyle.Bold);
-                    g.DrawString("+", addFont, addBrush, new RectangleF(cx, cy, CardSize, CardSize - 8), sf3);
-                    using var lblBrush3 = new SolidBrush(Color.FromArgb(120, 130, 100, 180));
-                    var sf4 = new StringFormat { Alignment = StringAlignment.Center };
-                    g.DrawString(Lang.GalleryAdd, _fontLabel, lblBrush3, cx + CardSize / 2, cy + CardSize - 14, sf4);
+                    int row = idx / Cols, col = idx % Cols;
+                    int cx = PadX + col * (CardSize + CardGap);
+                    int cy = curY + row * (CardSize + CardGap);
+                    if (cy + CardSize < viewTop || cy > viewBottom) continue;
+
+                    int id = ids[idx];
+                    bool hover = _hoverIndex == id;
+
+                    if (id >= PresetIndexBase)
+                    {
+                        var p = CrosshairPresets.All[id - PresetIndexBase];
+                        bool selected = CrosshairPresets.Matches(_overlay, p);
+                        DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
+                        DrawPresetPreview(g, cx, cy, CardSize, p);
+                        var labelRect = new RectangleF(cx + 2, cy + CardSize - 14, CardSize - 4, 12);
+                        g.DrawString(p.Name, _fontLabel, selected ? lblSelBrush : lblBrush, labelRect, sfLabel);
+                    }
+                    else if (id >= ArtIndexBase)
+                    {
+                        int artIdx = id - ArtIndexBase;
+                        bool selected = _overlay._style == OverlayForm.CrosshairStyle.Art && _overlay._artIndex == artIdx;
+                        DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
+                        ArtCrosshairs.Draw(g, artIdx, cx + CardSize / 2f, cy + CardSize / 2f - 4f, 24f, 255, true);
+                        var labelRect = new RectangleF(cx + 2, cy + CardSize - 14, CardSize - 4, 12);
+                        g.DrawString(ArtCrosshairs.GetName(artIdx), _fontLabel, selected ? lblSelBrush : lblBrush, labelRect, sfLabel);
+                    }
+                    else if (id < StandardStyles.Length)
+                    {
+                        bool selected = _overlay._style == StandardStyles[id];
+                        DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
+                        DrawCrosshairPreview(g, cx, cy, CardSize, StandardStyles[id]);
+                        g.DrawString(StyleLabels[id], _fontLabel, selected ? lblSelBrush : lblBrush, cx + CardSize / 2, cy + CardSize - 14, sfCenter);
+                    }
+                    else
+                    {
+                        int comIdx = id - StandardStyles.Length;
+                        if (comIdx < _communityImages.Count)
+                        {
+                            bool selected = _overlay._style == OverlayForm.CrosshairStyle.CustomImage
+                                && _overlay._customImagePath == _communityImages[comIdx];
+                            DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
+                            DrawImagePreview(g, cx, cy, CardSize, _communityImages[comIdx]);
+                            string name = Path.GetFileNameWithoutExtension(_communityImages[comIdx]);
+                            if (name.Length > 10) name = name[..9] + "…";
+                            g.DrawString(name, _fontLabel, lblBrush, cx + CardSize / 2, cy + CardSize - 14, sfCenter);
+                        }
+                        else
+                        {
+                            // "Add" button
+                            DrawCard(g, cx, cy, CardSize, CardSize, hover, false);
+                            using var addBrush = new SolidBrush(hover ? Color.FromArgb(200, 180, 140, 255) : Color.FromArgb(100, 130, 100, 180));
+                            var sf3 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                            using var addFont = new Font("Segoe UI", 28f, FontStyle.Bold);
+                            g.DrawString("+", addFont, addBrush, new RectangleF(cx, cy, CardSize, CardSize - 8), sf3);
+                            using var lblBrush3 = new SolidBrush(Color.FromArgb(120, 130, 100, 180));
+                            g.DrawString(Lang.GalleryAdd, _fontLabel, lblBrush3, cx + CardSize / 2, cy + CardSize - 14, sfCenter);
+                        }
+                    }
+
+                    // Favorite star badge (right-click toggles)
+                    var favKey = IdToFavKey(id);
+                    if (favKey != null && _overlay._galleryFavorites.Contains(favKey))
+                        g.DrawString("★", _fontLabel, starBrush, cx + CardSize - 16, cy + 4);
                 }
+
+                curY = endY;
             }
 
-            int comRows = (comCount + Cols - 1) / Cols;
-            curY += comRows * (CardSize + CardGap);
-
-            // ── PRESETS SECTION ──
-            g.DrawString(Lang.GalleryPresets, _fontSection, secBrush, PadX, curY + 4);
-            curY += SectionH;
-
-            var presets = CrosshairPresets.All;
-            for (int i = 0; i < presets.Count; i++)
-            {
-                int row = i / Cols, col = i % Cols;
-                int cx = PadX + col * (CardSize + CardGap);
-                int cy = curY + row * (CardSize + CardGap);
-                int globalIdx = PresetIndexBase + i;
-                bool hover = _hoverIndex == globalIdx;
-                bool selected = CrosshairPresets.Matches(_overlay, presets[i]);
-                DrawCard(g, cx, cy, CardSize, CardSize, hover, selected);
-                DrawPresetPreview(g, cx, cy, CardSize, presets[i]);
-                using var lblBrush4 = new SolidBrush(selected ? Color.White : Color.FromArgb(170, 180, 170, 210));
-                var sf5 = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
-                var labelRect = new RectangleF(cx + 2, cy + CardSize - 14, CardSize - 4, 12);
-                g.DrawString(presets[i].Name, _fontLabel, lblBrush4, labelRect, sf5);
-            }
-
-            int preRows = (presets.Count + Cols - 1) / Cols;
-            curY += preRows * (CardSize + CardGap);
             _contentHeight = curY + PadTop;
 
             g.ResetTransform();
@@ -414,14 +471,20 @@ namespace CrosshairOverlay
         {
             try
             {
-                using var img = new Bitmap(path);
                 int maxDim = cardSize - 24;
-                float scale = Math.Min((float)maxDim / img.Width, (float)maxDim / img.Height);
-                int w = (int)(img.Width * scale);
-                int h = (int)(img.Height * scale);
-                int px = x + (cardSize - w) / 2;
-                int py = y + (cardSize - h) / 2 - 4;
-                g.DrawImage(img, px, py, w, h);
+                if (!_thumbCache.TryGetValue(path, out var thumb))
+                {
+                    // Decode once, keep only the pre-scaled thumbnail.
+                    using var img = new Bitmap(path);
+                    float scale = Math.Min((float)maxDim / img.Width, (float)maxDim / img.Height);
+                    int tw = Math.Max(1, (int)(img.Width * scale));
+                    int th = Math.Max(1, (int)(img.Height * scale));
+                    thumb = new Bitmap(img, tw, th);
+                    _thumbCache[path] = thumb;
+                }
+                int px = x + (cardSize - thumb.Width) / 2;
+                int py = y + (cardSize - thumb.Height) / 2 - 4;
+                g.DrawImage(thumb, px, py, thumb.Width, thumb.Height);
             }
             catch { }
         }
@@ -734,6 +797,8 @@ namespace CrosshairOverlay
             // Close button hit test
             if (e.X >= Width - 36 && e.X <= Width - 8 && e.Y >= 4 && e.Y <= 30)
                 _hoverIndex = -999;
+            else if (RandomButtonRect.Contains(e.X, e.Y))
+                _hoverIndex = RandomButtonId;
             else
                 _hoverIndex = GetCardIndex(e.X, e.Y);
 
@@ -768,6 +833,22 @@ namespace CrosshairOverlay
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+
+            // v2.4: right-click toggles favorite on standard/art/preset cards.
+            if (e.Button == MouseButtons.Right)
+            {
+                int id = GetCardIndex(e.X, e.Y);
+                var favKey = IdToFavKey(id);
+                if (favKey != null)
+                {
+                    if (!_overlay._galleryFavorites.Remove(favKey))
+                        _overlay._galleryFavorites.Add(favKey);
+                    _overlay.SaveSettings();
+                    Invalidate();
+                }
+                return;
+            }
+
             if (e.Button != MouseButtons.Left) return;
 
             // Scrollbar hit test (takes priority over cards on its strip)
@@ -799,7 +880,29 @@ namespace CrosshairOverlay
                 return;
             }
 
+            // Random crosshair
+            if (_hoverIndex == RandomButtonId)
+            {
+                ApplyRandom();
+                return;
+            }
+
             if (_hoverIndex < 0) return;
+
+            // v2.4: art designs
+            if (_hoverIndex >= ArtIndexBase && _hoverIndex < PresetIndexBase)
+            {
+                int artIdx = _hoverIndex - ArtIndexBase;
+                if (artIdx < ArtCrosshairs.Count)
+                {
+                    _overlay._style = OverlayForm.CrosshairStyle.Art;
+                    _overlay._artIndex = artIdx;
+                    _overlay._needsStaticRender = true;
+                    _overlay.SaveSettings();
+                    Invalidate();
+                }
+                return;
+            }
 
             if (_hoverIndex >= PresetIndexBase)
             {
@@ -842,6 +945,33 @@ namespace CrosshairOverlay
                     AddCommunityImage();
                 }
             }
+        }
+
+        private void ApplyRandom()
+        {
+            var rnd = new Random();
+            int total = StandardStyles.Length + ArtCrosshairs.Count + CrosshairPresets.All.Count;
+            int pick = rnd.Next(total);
+
+            if (pick < StandardStyles.Length)
+            {
+                _overlay._style = StandardStyles[pick];
+            }
+            else if (pick < StandardStyles.Length + ArtCrosshairs.Count)
+            {
+                _overlay._style = OverlayForm.CrosshairStyle.Art;
+                _overlay._artIndex = pick - StandardStyles.Length;
+            }
+            else
+            {
+                CrosshairPresets.Apply(_overlay, CrosshairPresets.All[pick - StandardStyles.Length - ArtCrosshairs.Count]);
+                Invalidate();
+                return; // Apply() already saves + rerenders
+            }
+
+            _overlay._needsStaticRender = true;
+            _overlay.SaveSettings();
+            Invalidate();
         }
 
         private void AddCommunityImage()
@@ -917,6 +1047,8 @@ namespace CrosshairOverlay
                 _fontSection.Dispose();
                 _fontLabel.Dispose();
                 _fontClose.Dispose();
+                foreach (var thumb in _thumbCache.Values) thumb.Dispose();
+                _thumbCache.Clear();
             }
             base.Dispose(disposing);
         }

@@ -53,6 +53,8 @@ namespace CrosshairOverlay
         internal static string OpenGalleryTooltip => Get("Открыть галерею всех стилей прицелов", "Open gallery of all crosshair styles");
         internal static string CrosshairGalleryTitle => Get("ГАЛЕРЕЯ ПРИЦЕЛОВ", "CROSSHAIR GALLERY");
         internal static string GalleryStandard => Get("Стандарт", "Standard");
+        internal static string GalleryArt => Get("Авторские · 50", "Artist series · 50");
+        internal static string GalleryFavorites => Get("★ Избранное", "★ Favorites");
         internal static string GalleryCommunity => Get("Сообщество", "Community");
         internal static string GalleryAdd => Get("Добавить", "Add");
         internal static string GalleryPresets => Get("Пресеты (200+)", "Presets (200+)");

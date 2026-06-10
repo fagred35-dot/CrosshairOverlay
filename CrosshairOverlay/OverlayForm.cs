@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -93,6 +94,25 @@ namespace CrosshairOverlay
         [DllImport("user32.dll", SetLastError = true)] private static extern bool DestroyIcon(IntPtr hIcon);
         [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
         [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr hdcDest, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
+        [DllImport("gdi32.dll")] private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO pbmi, uint usage, out IntPtr ppvBits, IntPtr hSection, uint offset);
+        [DllImport("gdi32.dll")] private static extern bool GdiFlush();
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BITMAPINFO
+        {
+            public int biSize;
+            public int biWidth;
+            public int biHeight;
+            public short biPlanes;
+            public short biBitCount;
+            public int biCompression;
+            public int biSizeImage;
+            public int biXPelsPerMeter;
+            public int biYPelsPerMeter;
+            public int biClrUsed;
+            public int biClrImportant;
+            // BITMAPINFOHEADER only — no palette needed for 32bpp BI_RGB.
+        }
         private const int SM_XVIRTUALSCREEN = 76;
         private const int SM_YVIRTUALSCREEN = 77;
         private const int SM_CXVIRTUALSCREEN = 78;
@@ -119,16 +139,19 @@ namespace CrosshairOverlay
             Cross, Circle, Dot, CrossWithCircle, Chevron, TShape, Diamond, Arrow, Plus,
             XShape, TriangleDown, Crosshairs, SquareBrackets, Wings,
             DoubleCircle, DashedCross, TriangleUp, SerifCross,
-            CustomImage
+            Art,            // v2.4: 50 hand-designed vector crosshairs (see ArtCrosshairs)
+            CustomImage     // must stay last: style cycling treats the last value as "image" slot
         }
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.3.0";
+        internal const string APP_VERSION = "2.4.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
         internal CrosshairStyle _style = CrosshairStyle.Cross;
+        internal int _artIndex = 0;          // selected design when _style == Art
+        internal List<string> _galleryFavorites = new();  // "std:3" / "art:12" / "preset:40"
         internal int _size = 20;
         internal int _thickness = 2;
         internal int _gap = 4;
@@ -511,8 +534,7 @@ namespace CrosshairOverlay
             SaveSettings();
             _trayIcon.Visible = false; _trayIcon.Dispose();
             _customImageCache?.Dispose();
-            _renderBufferGfx?.Dispose();
-            _renderBuffer?.Dispose();
+            DisposeRenderSurface();
             _clearBrush.Dispose();
             UsageTracker.Save();
             base.OnFormClosed(e);
@@ -1191,17 +1213,78 @@ namespace CrosshairOverlay
 
         #region Rendering
 
-        // Persistent render buffer — the screen-sized bitmap is reused across frames
-        // instead of being allocated+disposed every tick. At 60 FPS this used to churn
-        // 30–130 MB/s through the GC (depending on resolution); now the managed alloc
-        // cost per frame is ~zero. We also clear only a dirty rectangle around the
-        // crosshair instead of wiping the whole screen.
-        private Bitmap? _renderBuffer;
+        // v2.4 zero-copy render surface.
+        //
+        // v2.3 already reused a managed Bitmap across frames, but every frame still
+        // paid for `Bitmap.GetHbitmap()` — a full screen-sized pixel copy plus a
+        // GDI bitmap allocation — and for CreateCompatibleDC/SelectObject/DeleteObject/
+        // DeleteDC churn, just to hand the pixels to UpdateLayeredWindow.
+        //
+        // Now GDI+ paints straight into a persistent GDI DIB section: the managed
+        // Bitmap wraps the DIB's own memory, and the persistent memory DC with the
+        // DIB selected is passed to UpdateLayeredWindow directly. Per frame this
+        // removes a ~8-33 MB memcpy (1080p-4K) and 4 GDI object operations; the
+        // per-frame cost is now just the actual drawing. We still clear only a
+        // dirty rectangle around the crosshair instead of wiping the whole screen.
+        private Bitmap? _renderBuffer;       // wraps the DIB section memory (no own pixels)
         private Graphics? _renderBufferGfx;
+        private IntPtr _surfaceDc;           // persistent memory DC for UpdateLayeredWindow
+        private IntPtr _surfaceDib;          // the DIB section bitmap
+        private IntPtr _surfaceOldBmp;       // previous bitmap of _surfaceDc (restored on dispose)
         private int _renderBufferW;
         private int _renderBufferH;
         private Rectangle _lastDirtyRect;
         private readonly SolidBrush _clearBrush = new(Color.FromArgb(0, 0, 0, 0));
+
+        private void DisposeRenderSurface()
+        {
+            _renderBufferGfx?.Dispose(); _renderBufferGfx = null;
+            _renderBuffer?.Dispose(); _renderBuffer = null;
+            if (_surfaceDc != IntPtr.Zero)
+            {
+                if (_surfaceOldBmp != IntPtr.Zero) SelectObject(_surfaceDc, _surfaceOldBmp);
+                if (_surfaceDib != IntPtr.Zero) DeleteObject(_surfaceDib);
+                DeleteDC(_surfaceDc);
+                _surfaceDc = _surfaceDib = _surfaceOldBmp = IntPtr.Zero;
+            }
+        }
+
+        private bool EnsureRenderSurface(int w, int h)
+        {
+            if (_surfaceDc != IntPtr.Zero && _renderBufferW == w && _renderBufferH == h)
+                return true;
+
+            DisposeRenderSurface();
+
+            IntPtr screenDc = GetDC(IntPtr.Zero);
+            try { _surfaceDc = CreateCompatibleDC(screenDc); }
+            finally { ReleaseDC(IntPtr.Zero, screenDc); }
+            if (_surfaceDc == IntPtr.Zero) return false;
+
+            var bmi = new BITMAPINFO
+            {
+                biSize = Marshal.SizeOf<BITMAPINFO>(),
+                biWidth = w,
+                biHeight = -h,   // negative = top-down rows, matching GDI+ layout
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = 0 // BI_RGB
+            };
+            _surfaceDib = CreateDIBSection(_surfaceDc, ref bmi, 0 /*DIB_RGB_COLORS*/, out IntPtr bits, IntPtr.Zero, 0);
+            if (_surfaceDib == IntPtr.Zero || bits == IntPtr.Zero)
+            {
+                DisposeRenderSurface();
+                return false;
+            }
+            _surfaceOldBmp = SelectObject(_surfaceDc, _surfaceDib);
+
+            _renderBuffer = new Bitmap(w, h, w * 4, PixelFormat.Format32bppPArgb, bits);
+            _renderBufferGfx = Graphics.FromImage(_renderBuffer);
+            _renderBufferW = w;
+            _renderBufferH = h;
+            _lastDirtyRect = new Rectangle(0, 0, w, h);
+            return true;
+        }
 
         internal void RenderOverlay()
         {
@@ -1211,16 +1294,7 @@ namespace CrosshairOverlay
             int w = screen.Bounds.Width, h = screen.Bounds.Height;
             int cx = w / 2 + _offsetX, cy = h / 2 + _offsetY;
 
-            if (_renderBuffer == null || _renderBufferW != w || _renderBufferH != h)
-            {
-                _renderBufferGfx?.Dispose();
-                _renderBuffer?.Dispose();
-                _renderBuffer = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
-                _renderBufferGfx = Graphics.FromImage(_renderBuffer);
-                _renderBufferW = w;
-                _renderBufferH = h;
-                _lastDirtyRect = new Rectangle(0, 0, w, h);
-            }
+            if (!EnsureRenderSurface(w, h)) return;
 
             var g = _renderBufferGfx!;
             g.ResetTransform();
@@ -1272,30 +1346,26 @@ namespace CrosshairOverlay
 
             g.ResetTransform();
 
-            IntPtr screenDc = GetDC(IntPtr.Zero);
-            IntPtr memDc = CreateCompatibleDC(screenDc);
-            IntPtr hBitmap = _renderBuffer.GetHbitmap(Color.FromArgb(0));
-            IntPtr oldBitmap = SelectObject(memDc, hBitmap);
+            // GDI+ painted directly into the DIB section; flush and present it.
+            GdiFlush();
+            IntPtr screenDc2 = GetDC(IntPtr.Zero);
             try
             {
                 var pptDst = new POINT { x = screen.Bounds.Left, y = screen.Bounds.Top };
                 var psize = new SIZE { cx = w, cy = h };
                 var pptSrc = new POINT { x = 0, y = 0 };
                 var blend = new BLENDFUNCTION { BlendOp = AC_SRC_OVER, SourceConstantAlpha = 255, AlphaFormat = AC_SRC_ALPHA };
-                UpdateLayeredWindow(Handle, screenDc, ref pptDst, ref psize, memDc, ref pptSrc, 0, ref blend, ULW_ALPHA);
+                UpdateLayeredWindow(Handle, screenDc2, ref pptDst, ref psize, _surfaceDc, ref pptSrc, 0, ref blend, ULW_ALPHA);
             }
             finally
             {
-                SelectObject(memDc, oldBitmap);
-                DeleteObject(hBitmap);
-                DeleteDC(memDc);
-                ReleaseDC(IntPtr.Zero, screenDc);
+                ReleaseDC(IntPtr.Zero, screenDc2);
             }
         }
 
         internal void DrawCrosshairFull(Graphics g, int cx, int cy, int alpha)
         {
-            if (_showShadow && _style != CrosshairStyle.CustomImage)
+            if (_showShadow && _style != CrosshairStyle.CustomImage && _style != CrosshairStyle.Art)
             {
                 var state = g.Save();
                 g.TranslateTransform(_shadowOffsetX, _shadowOffsetY);
@@ -1304,13 +1374,21 @@ namespace CrosshairOverlay
                 g.Restore(state);
             }
 
-            // Glow effect
+            // Glow effect — v2.4: soft radial falloff instead of a flat disc.
             if (_glowEnabled && _style != CrosshairStyle.CustomImage)
             {
                 int gs = _size + _glowSize;
-                using var glowBrush = new SolidBrush(Color.FromArgb(
-                    Math.Min(alpha, _glowAlpha), _crossColor));
-                g.FillEllipse(glowBrush, cx - gs, cy - gs, gs * 2, gs * 2);
+                using var glowPath = new GraphicsPath();
+                glowPath.AddEllipse(cx - gs, cy - gs, gs * 2, gs * 2);
+                using var glowBrush = new PathGradientBrush(glowPath)
+                {
+                    CenterPoint = new PointF(cx, cy),
+                    CenterColor = Color.FromArgb(Math.Min(alpha, _glowAlpha), _crossColor),
+                    SurroundColors = new[] { Color.FromArgb(0, _crossColor) }
+                };
+                // Push the bright core outward a little so the glow hugs the crosshair.
+                glowBrush.FocusScales = new PointF(0.25f, 0.25f);
+                g.FillPath(glowBrush, glowPath);
             }
 
             Brush mainBrush;
@@ -1332,7 +1410,9 @@ namespace CrosshairOverlay
 
             DrawStyle(g, cx, cy, mainBrush, outlineBrush, alpha);
 
-            if (_showDot && _style != CrosshairStyle.Dot && _style != CrosshairStyle.CustomImage)
+            // Art designs ship with their own center composition — no extra dot on top.
+            if (_showDot && _style != CrosshairStyle.Dot && _style != CrosshairStyle.CustomImage
+                && _style != CrosshairStyle.Art)
             {
                 float dSize = _dotSize + (_dotPulse ? MathF.Sin(_dotPulseSine) * 1.5f : 0f);
                 dSize = Math.Max(0.5f, dSize);
@@ -1358,11 +1438,12 @@ namespace CrosshairOverlay
                 g.DrawLine(hmPen, cx + d, cy + d, cx + d * 0.4f, cy + d * 0.4f);
             }
 
-            // Macro indicator dot (bottom-right corner)
+            // Macro indicator dot (bottom-right corner). Surface dimensions match the
+            // current screen, so reuse them instead of querying Screen.FromControl
+            // (a P/Invoke round-trip) every frame.
             int dotRadius = 4;
-            var screen2 = Screen.FromControl(this);
-            int dotX = screen2.Bounds.Width - 20;
-            int dotY2 = screen2.Bounds.Height - 20;
+            int dotX = (_renderBufferW > 0 ? _renderBufferW : Screen.FromControl(this).Bounds.Width) - 20;
+            int dotY2 = (_renderBufferH > 0 ? _renderBufferH : Screen.FromControl(this).Bounds.Height) - 20;
             Color dotColor = _autoClickerEnabled
                 ? Color.FromArgb(alpha, 0, 220, 60)
                 : Color.FromArgb(alpha, 220, 40, 40);
@@ -1434,6 +1515,10 @@ namespace CrosshairOverlay
                     break;
                 case CrosshairStyle.SerifCross:
                     DrawSerifCross(g, cx, cy, s, gap, t, ow, brush, outlineBrush);
+                    break;
+                case CrosshairStyle.Art:
+                    // v2.4: hand-designed vector crosshairs with their own palettes.
+                    ArtCrosshairs.Draw(g, _artIndex, cx, cy, s, alpha, _showOutline);
                     break;
                 case CrosshairStyle.CustomImage:
                     if (_customImageCache != null)
@@ -1558,15 +1643,13 @@ namespace CrosshairOverlay
                 (new(cx - half, cy + half), new(cx - gapD, cy + gapD)),
                 (new(cx + half, cy + half), new(cx + gapD, cy + gapD)),
             };
-            foreach (var (a, b) in lines)
+            // Pens hoisted out of the loop — one allocation per frame instead of per line.
+            using (var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var op = outlineBrush != null ? new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round } : null)
             {
-                if (outlineBrush != null)
-                {
-                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    g.DrawLine(op, a, b);
-                }
-                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawLine(p, a, b);
+                if (op != null)
+                    foreach (var (a, b) in lines) g.DrawLine(op, a, b);
+                foreach (var (a, b) in lines) g.DrawLine(p, a, b);
             }
         }
 
@@ -1594,15 +1677,12 @@ namespace CrosshairOverlay
                 new[] { new PointF(cx - half + tick, cy - half), new PointF(cx - half, cy - half), new PointF(cx - half, cy + half), new PointF(cx - half + tick, cy + half) },
                 new[] { new PointF(cx + half - tick, cy - half), new PointF(cx + half, cy - half), new PointF(cx + half, cy + half), new PointF(cx + half - tick, cy + half) },
             };
-            foreach (var pts2 in brackets)
+            using (var p = new Pen(brush, t) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var op = outlineBrush != null ? new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round } : null)
             {
-                if (outlineBrush != null)
-                {
-                    using var op = new Pen(outlineBrush, t + ow * 2) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    g.DrawLines(op, pts2);
-                }
-                using var p = new Pen(brush, t) { LineJoin = LineJoin.Miter, StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawLines(p, pts2);
+                if (op != null)
+                    foreach (var pts2 in brackets) g.DrawLines(op, pts2);
+                foreach (var pts2 in brackets) g.DrawLines(p, pts2);
             }
         }
 
@@ -1637,17 +1717,12 @@ namespace CrosshairOverlay
                 (new(cx - s, cy),   new(cx - gap, cy)),
                 (new(cx + gap, cy), new(cx + s, cy)),
             };
-            foreach (var (a, b) in lines)
+            using (var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round, DashPattern = dash })
+            using (var op = outlineBrush != null ? new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round, DashPattern = dash } : null)
             {
-                if (outlineBrush != null)
-                {
-                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    op.DashPattern = dash;
-                    g.DrawLine(op, a, b);
-                }
-                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                p.DashPattern = dash;
-                g.DrawLine(p, a, b);
+                if (op != null)
+                    foreach (var (a, b) in lines) g.DrawLine(op, a, b);
+                foreach (var (a, b) in lines) g.DrawLine(p, a, b);
             }
         }
 
@@ -1681,15 +1756,12 @@ namespace CrosshairOverlay
                 (new(cx - s, cy - cap), new(cx - s, cy + cap)), // left
                 (new(cx + s, cy - cap), new(cx + s, cy + cap)), // right
             };
-            foreach (var (a, b) in serifs)
+            using (var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var op = outlineBrush != null ? new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round } : null)
             {
-                if (outlineBrush != null)
-                {
-                    using var op = new Pen(outlineBrush, t + ow * 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    g.DrawLine(op, a, b);
-                }
-                using var p = new Pen(brush, t) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawLine(p, a, b);
+                if (op != null)
+                    foreach (var (a, b) in serifs) g.DrawLine(op, a, b);
+                foreach (var (a, b) in serifs) g.DrawLine(p, a, b);
             }
         }
 
@@ -1928,7 +2000,9 @@ namespace CrosshairOverlay
 
                 var data = new SettingsData
                 {
-                    Style = (int)_style, Size = _size, Thickness = _thickness, Gap = _gap,
+                    SettingsVersion = 1,
+                    Style = (int)_style, ArtIndex = _artIndex, Size = _size, Thickness = _thickness, Gap = _gap,
+                    GalleryFavorites = _galleryFavorites,
                     Opacity = _opacity, OffsetX = _offsetX, OffsetY = _offsetY,
                     ColorR = _crossColor.R, ColorG = _crossColor.G, ColorB = _crossColor.B,
                     Color2R = _crossColor2.R, Color2G = _crossColor2.G, Color2B = _crossColor2.B,
@@ -2001,7 +2075,15 @@ namespace CrosshairOverlay
                 if (data == null) return;
 
                 int _styleMax = Enum.GetValues(typeof(CrosshairStyle)).Length - 1;
-                _style = (CrosshairStyle)Math.Clamp(data.Style, 0, _styleMax);
+                int styleInt = Math.Clamp(data.Style, 0, _styleMax);
+                // v2.4 migration: Art was inserted before CustomImage, so settings
+                // saved by <= 2.3 (SettingsVersion 0) that pointed at the old
+                // CustomImage slot (18) must be remapped to the new one.
+                if (data.SettingsVersion < 1 && data.Style == (int)CrosshairStyle.Art)
+                    styleInt = (int)CrosshairStyle.CustomImage;
+                _style = (CrosshairStyle)styleInt;
+                _artIndex = Math.Clamp(data.ArtIndex, 0, Math.Max(0, ArtCrosshairs.Count - 1));
+                _galleryFavorites = data.GalleryFavorites ?? new List<string>();
                 _size = Math.Clamp(data.Size, 4, 100);
                 _thickness = Math.Clamp(data.Thickness, 1, 10);
                 _gap = Math.Clamp(data.Gap, 0, 30);
@@ -2111,7 +2193,11 @@ namespace CrosshairOverlay
 
         private class SettingsData
         {
+            // 0 = settings written by <= v2.3 (no version field), 1 = v2.4+.
+            public int SettingsVersion { get; set; }
             public int Style { get; set; }
+            public int ArtIndex { get; set; }
+            public List<string>? GalleryFavorites { get; set; }
             public int Size { get; set; } = 20;
             public int Thickness { get; set; } = 2;
             public int Gap { get; set; } = 4;
