@@ -139,13 +139,13 @@ namespace CrosshairOverlay
             Cross, Circle, Dot, CrossWithCircle, Chevron, TShape, Diamond, Arrow, Plus,
             XShape, TriangleDown, Crosshairs, SquareBrackets, Wings,
             DoubleCircle, DashedCross, TriangleUp, SerifCross,
-            Art,            // v2.4: 50 hand-designed vector crosshairs (see ArtCrosshairs)
+            Art,            // v2.4: hand-designed vector crosshairs, animated since v2.6 (see ArtCrosshairs)
             CustomImage     // must stay last: style cycling treats the last value as "image" slot
         }
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.5.0";
+        internal const string APP_VERSION = "2.6.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -1152,6 +1152,10 @@ namespace CrosshairOverlay
                 needsRender = true;
             }
 
+            // v2.6 — animated art designs need continuous frames while visible
+            if (_isVisible && _style == CrosshairStyle.Art && ArtCrosshairs.IsAnimated(_artIndex))
+                needsRender = true;
+
             if (_spin && _isVisible)
             {
                 _rotation = (_rotation + _spinSpeed) % 360f;
@@ -1274,6 +1278,7 @@ namespace CrosshairOverlay
             bool anyAnim =
                 _rainbowMode
                 || (_spin && _isVisible)
+                || (_isVisible && _style == CrosshairStyle.Art && ArtCrosshairs.IsAnimated(_artIndex))
                 || (_dotPulse && _showDot && _isVisible)
                 || _dynamicCrosshair
                 || _pulseScale > 1.005f
@@ -1593,7 +1598,9 @@ namespace CrosshairOverlay
                     break;
                 case CrosshairStyle.Art:
                     // v2.4: hand-designed vector crosshairs with their own palettes.
-                    ArtCrosshairs.Draw(g, _artIndex, cx, cy, s, alpha, _showOutline);
+                    // v2.6: live time drives per-design animations (spin/pulse/fade/wobble).
+                    ArtCrosshairs.Draw(g, _artIndex, cx, cy, s, alpha, _showOutline,
+                        Environment.TickCount64 % 86_400_000L / 1000f);
                     break;
                 case CrosshairStyle.CustomImage:
                     if (_customImageCache != null)

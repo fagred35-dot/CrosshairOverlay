@@ -37,7 +37,7 @@ namespace CrosshairOverlay
         private const int SectionH = 36;
 
         // Hit-test index ranges (so sections can grow without collisions)
-        private const int ArtIndexBase = 1000;    // v2.4: 50 hand-designed crosshairs
+        private const int ArtIndexBase = 1000;    // v2.4: hand-designed crosshairs (150 since v2.6)
         private const int PresetIndexBase = 2000;
         private const int RandomButtonId = -998;
 
