@@ -38,6 +38,7 @@ namespace CrosshairOverlay
         private bool _dragging;
         private Point _dragStart;
         private Point _formStart;
+        private Rectangle _closeRect => new(Width - 24, 4, 18, 18);   // v2.5 close button
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MEMORYSTATUSEX
@@ -92,6 +93,16 @@ namespace CrosshairOverlay
         private void OnFormMouseDown(object? sender, MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) return;
+
+            // v2.5: ✕ hides the monitor (and remembers the choice)
+            if (_closeRect.Contains(e.Location))
+            {
+                _overlay._sysMonVisible = false;
+                _overlay.SaveSettings();
+                _overlay.UpdateSysMonState();
+                return;
+            }
+
             _dragging = true;
             _dragStart = Cursor.Position;
             _formStart = Location;
@@ -233,27 +244,56 @@ namespace CrosshairOverlay
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            // Rounded background
-            using (var path = RoundedRect(new Rectangle(0, 0, Width, Height), 10))
-            using (var bg = new SolidBrush(Color.FromArgb(240, 18, 20, 26)))
-            using (var border = new Pen(Color.FromArgb(80, 90, 100, 120), 1))
+            // v2.5: styled to match the app's purple "glass" theme (was a plain grey box).
+            var full = new Rectangle(0, 0, Width, Height);
+            using (var path = RoundedRect(full, 12))
             {
-                g.FillPath(bg, path);
-                g.DrawPath(border, path);
+                using (var bg = new LinearGradientBrush(full,
+                    Color.FromArgb(245, 18, 10, 30), Color.FromArgb(245, 36, 20, 60), 90f))
+                    g.FillPath(bg, path);
+                // soft radial glow in the top-left corner, like the settings panel
+                using (var glowPath = new GraphicsPath())
+                {
+                    glowPath.AddEllipse(-60, -60, Width + 40, 160);
+                    using var glow = new PathGradientBrush(glowPath)
+                    {
+                        CenterColor = Color.FromArgb(45, 175, 130, 255),
+                        SurroundColors = new[] { Color.FromArgb(0, 175, 130, 255) },
+                        CenterPoint = new PointF(Width * 0.3f, 10)
+                    };
+                    var old = g.Clip;
+                    g.SetClip(path);
+                    g.FillPath(glow, glowPath);
+                    g.Clip = old;
+                }
+                using (var border = new Pen(Color.FromArgb(130, 80, 220), 1))
+                    g.DrawPath(border, path);
             }
 
-            // Title
+            // Title + accent dot
             using (var titleFont = new Font("Segoe UI Semibold", 9f))
-            using (var titleBrush = new SolidBrush(Color.FromArgb(220, 230, 240, 255)))
+            using (var titleBrush = new SolidBrush(Color.FromArgb(220, 170, 255)))
+            using (var dotBrush = new SolidBrush(Color.FromArgb(175, 130, 255)))
             {
+                g.FillEllipse(dotBrush, 10, 11, 6, 6);
                 g.DrawString(Lang.IsRussian ? "МОНИТОР СИСТЕМЫ" : "SYSTEM MONITOR",
-                    titleFont, titleBrush, new PointF(10, 6));
+                    titleFont, titleBrush, new PointF(21, 5));
+            }
+
+            // Close button (✕)
+            bool closeHover = _closeRect.Contains(PointToClient(Cursor.Position));
+            using (var xFont = new Font("Segoe UI", 9f, FontStyle.Bold))
+            using (var xBrush = new SolidBrush(closeHover
+                ? Color.FromArgb(255, 240, 245, 255) : Color.FromArgb(150, 160, 150, 185)))
+            {
+                var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString("✕", xFont, xBrush, _closeRect, sf);
             }
 
             // Rows
             using var rowFont = new Font("Consolas", 9.5f);
-            using var labelBrush = new SolidBrush(Color.FromArgb(200, 180, 195, 220));
-            using var valBrush   = new SolidBrush(Color.FromArgb(255, 240, 245, 255));
+            using var labelBrush = new SolidBrush(Color.FromArgb(200, 160, 150, 185));
+            using var valBrush   = new SolidBrush(Color.FromArgb(255, 235, 228, 245));
 
             int y = 28;
             DrawRow(g, rowFont, labelBrush, valBrush, y, "CPU",  $"{_cpuPct,5:F1} %",
@@ -293,16 +333,22 @@ namespace CrosshairOverlay
             g.DrawString(value, font, valBrush,
                 new PointF(Width - 10 - valSize.Width, y));
 
-            // Thin bar under the row
+            // Rounded progress bar under the row (v2.5 — matches the panel's slider style)
             int barY = y + 16;
             int barW = Width - 20;
-            using var track = new SolidBrush(Color.FromArgb(60, 60, 70, 85));
-            g.FillRectangle(track, 10, barY, barW, 2);
+            var trackRect = new Rectangle(10, barY, barW, 3);
+            using (var trackPath = RoundedRect(trackRect, 1))
+            using (var track = new SolidBrush(Color.FromArgb(70, 80, 50, 130)))
+                g.FillPath(track, trackPath);
             int w = (int)(barW * Math.Clamp(bar01, 0f, 1f));
-            if (w > 0)
+            if (w > 2)
             {
-                using var fg = new SolidBrush(barColor);
-                g.FillRectangle(fg, 10, barY, w, 2);
+                var fillRect = new Rectangle(10, barY, w, 3);
+                using var fillPath = RoundedRect(fillRect, 1);
+                using var fg = new LinearGradientBrush(
+                    new Rectangle(fillRect.X, fillRect.Y - 1, Math.Max(2, fillRect.Width), fillRect.Height + 2),
+                    Color.FromArgb(200, barColor), barColor, 0f);
+                g.FillPath(fg, fillPath);
             }
         }
 

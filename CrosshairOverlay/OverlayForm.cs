@@ -145,7 +145,7 @@ namespace CrosshairOverlay
         #endregion
 
         // Auto-update: change these to your GitHub repo
-        internal const string APP_VERSION = "2.4.0";
+        internal const string APP_VERSION = "2.5.0";
         private const string GITHUB_REPO = "fagred35-dot/CrosshairOverlay";
 
         #region Crosshair Settings
@@ -252,6 +252,16 @@ namespace CrosshairOverlay
         internal bool _burstMode = false;
         internal int _burstCount = 3;
         private bool _burstLastLmbState = false;
+
+        // v2.5 — "humanization" pack. A bot that clicks with perfect periodicity, zero
+        // press duration and constant speed is trivially detectable; these options make
+        // the click stream statistically resemble a human hand.
+        internal volatile int _clickHoldMs = 0;        // 0 = instant; >0 = button stays pressed N ms (±30% jitter). Per-click mode, CPS ≤ 40.
+        internal bool _cpsDrift = false;               // slow sinusoidal wander of effective CPS (humans speed up / tire out)
+        internal volatile int _cpsDriftPercent = 20;   // drift amplitude, % of base CPS
+        internal bool _microPauses = false;            // occasional short "regrip" pauses
+        internal volatile int _microPausesPerMin = 6;  // average pauses per minute (150–600 ms each)
+        internal bool _clickerWarmup = false;          // ramp 40% → 100% CPS over first 1.5 s after start/press
         // Accessor avoids CS1690 when callers read field via the Form reference.
         internal long GetClickCounter() => Interlocked.Read(ref _clickCounter);
         internal void ResetClickCounter() => Interlocked.Exchange(ref _clickCounter, 0);
@@ -462,6 +472,10 @@ namespace CrosshairOverlay
             LoadSettings();
             _currentOpacity = _opacity;
             _targetOpacity = _opacity;
+
+            // v2.5 — achievement stats
+            UsageTracker.ArtStyleId = (int)CrosshairStyle.Art;
+            UsageTracker.RegisterLaunch();
 
             var initPos = Cursor.Position;
             _lastMouseX = initPos.X;
@@ -760,17 +774,77 @@ namespace CrosshairOverlay
             INPUT[] buf = new INPUT[256];
             int inputSize = Marshal.SizeOf<INPUT>();
 
+            // === v2.5 humanization state ===
+            long warmupStart = Stopwatch.GetTimestamp();   // restarted on every hold-gate release
+            bool wasGated = true;
+            double driftPhase = Random.Shared.NextDouble() * Math.PI * 2;
+            double driftPeriodSec = 8 + Random.Shared.NextDouble() * 7;   // 8–15 s per wander cycle
+            long loopStart = Stopwatch.GetTimestamp();
+
             while (_clickerRunning)
             {
                 if (_clickOnHold && !_physicalLmbDown)
                 {
                     carry = 0;
                     nextTick = Stopwatch.GetTimestamp();
+                    wasGated = true;
                     Thread.Sleep(1);
                     continue;
                 }
+                if (wasGated) { wasGated = false; warmupStart = Stopwatch.GetTimestamp(); }
 
-                int cps = Math.Max(1, _clicksPerSecond);
+                double effCps = Math.Max(1, _clicksPerSecond);
+
+                // Warm-up: humans don't hit max speed instantly — ramp 40% → 100% over 1.5 s.
+                if (_clickerWarmup)
+                {
+                    double upSec = (double)(Stopwatch.GetTimestamp() - warmupStart) / ticksPerSec;
+                    if (upSec < 1.5) effCps *= 0.4 + 0.6 * (upSec / 1.5);
+                }
+
+                // CPS drift: slow sine wander (period 8–15 s) so long sessions have no flat rate.
+                if (_cpsDrift && _cpsDriftPercent > 0)
+                {
+                    double t = (double)(Stopwatch.GetTimestamp() - loopStart) / ticksPerSec;
+                    effCps *= 1.0 + Math.Sin(driftPhase + t * 2 * Math.PI / driftPeriodSec) * (_cpsDriftPercent / 100.0);
+                }
+                effCps = Math.Max(1, effCps);
+
+                // Micro-pauses: with N pauses/min on average, chance per tick = N * tick / 60s.
+                if (_microPauses && Random.Shared.NextDouble() < _microPausesPerMin * (TickMs / 1000.0) / 60.0)
+                {
+                    Thread.Sleep(150 + Random.Shared.Next(450));   // 150–600 ms "regrip"
+                    nextTick = Stopwatch.GetTimestamp();
+                    carry = 0;
+                    continue;
+                }
+
+                // Press-duration mode: at low CPS send DOWN, hold, UP per click so games that
+                // sample input per frame register the press (batched down+up = 0 ms hold).
+                if (_clickHoldMs > 0 && effCps <= 40)
+                {
+                    uint dFlag = _rightClickMode ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+                    uint uFlag = _rightClickMode ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+                    double intervalMs = 1000.0 / effCps;
+                    if (_randomDelay)
+                        intervalMs *= 1.0 + (Random.Shared.NextDouble() * 2 - 1) * (_randomDelayPercent / 100.0);
+                    int hold = Math.Max(1, (int)(_clickHoldMs * (1.0 + (Random.Shared.NextDouble() * 2 - 1) * 0.3)));
+                    hold = Math.Min(hold, (int)(intervalMs * 0.8));   // never overlap the next click
+
+                    mouse_event(dFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+                    Thread.Sleep(hold);
+                    mouse_event(uFlag, 0, 0, 0, SYNTHETIC_EXTRA_INFO);
+                    Interlocked.Increment(ref _clickCounter);
+                    if (_hitMarkerEnabled) _hitMarkerProgress = 1f;
+
+                    int rest = (int)intervalMs - hold;
+                    if (rest > 0) Thread.Sleep(rest);
+                    nextTick = Stopwatch.GetTimestamp();
+                    carry = 0;
+                    continue;
+                }
+
+                int cps = (int)Math.Round(effCps);
 
                 // Accumulate regular clicks at configured CPS (base rate, up to 60).
                 carry += cps * (TickMs / 1000.0);
@@ -1189,6 +1263,7 @@ namespace CrosshairOverlay
 
                 // #98 Usage tracker tick
                 UsageTracker.Tick(_clicksPerSecond, GetClickCounter());
+                UsageTracker.NoteStyle((int)_style, _artIndex);   // v2.5 — Collector/Art-lover achievements
             }
 
             if (needsRender && _currentOpacity > 0.5f)
@@ -1881,7 +1956,11 @@ namespace CrosshairOverlay
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
                 var tag = root.GetProperty("tag_name").GetString()?.TrimStart('v', 'V') ?? "";
-                if (string.Compare(tag, APP_VERSION, StringComparison.OrdinalIgnoreCase) <= 0)
+                // v2.5: numeric comparison ("2.10.0" is newer than "2.5.0"; string compare said otherwise)
+                bool upToDate = !Version.TryParse(tag, out var remoteVer) ||
+                                !Version.TryParse(APP_VERSION, out var localVer) ||
+                                remoteVer <= localVer;
+                if (upToDate)
                 {
                     MessageBox.Show(owner, Lang.IsRussian ? $"У вас актуальная версия ({APP_VERSION})." 
                         : $"You are up to date ({APP_VERSION}).", "Crosshair Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -2022,6 +2101,12 @@ namespace CrosshairOverlay
                     RandomDelayPercent = _randomDelayPercent,
                     BurstMode = _burstMode,
                     BurstCount = _burstCount,
+                    ClickHoldMs = _clickHoldMs,
+                    CpsDrift = _cpsDrift,
+                    CpsDriftPercent = _cpsDriftPercent,
+                    MicroPauses = _microPauses,
+                    MicroPausesPerMin = _microPausesPerMin,
+                    ClickerWarmup = _clickerWarmup,
 
                     DynamicCrosshair = _dynamicCrosshair,
                     DynamicMaxSpread = _dynamicMaxSpread,
@@ -2116,6 +2201,12 @@ namespace CrosshairOverlay
                 _randomDelayPercent = Math.Clamp(data.RandomDelayPercent, 5, 50);
                 _burstMode = data.BurstMode;
                 _burstCount = Math.Clamp(data.BurstCount, 1, 50);
+                _clickHoldMs = Math.Clamp(data.ClickHoldMs, 0, 60);
+                _cpsDrift = data.CpsDrift;
+                _cpsDriftPercent = Math.Clamp(data.CpsDriftPercent, 5, 40);
+                _microPauses = data.MicroPauses;
+                _microPausesPerMin = Math.Clamp(data.MicroPausesPerMin, 1, 30);
+                _clickerWarmup = data.ClickerWarmup;
 
                 _dynamicCrosshair = data.DynamicCrosshair;
                 _dynamicMaxSpread = Math.Clamp(data.DynamicMaxSpread, 1f, 30f);
@@ -2236,6 +2327,12 @@ namespace CrosshairOverlay
             public int BurstCount { get; set; } = 3;
             public bool RandomDelay { get; set; }
             public int RandomDelayPercent { get; set; } = 20;
+            public int ClickHoldMs { get; set; }
+            public bool CpsDrift { get; set; }
+            public int CpsDriftPercent { get; set; } = 20;
+            public bool MicroPauses { get; set; }
+            public int MicroPausesPerMin { get; set; } = 6;
+            public bool ClickerWarmup { get; set; }
             public bool UseSendInput { get; set; } = true;
             public bool UseMultithreading { get; set; } = true;
             public bool UseHighPrecision { get; set; } = true;
