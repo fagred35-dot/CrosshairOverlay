@@ -205,13 +205,39 @@ namespace CrosshairOverlay
             public string LastStreakDate { get; set; } = "";
             public long TotalClicks { get; set; }
             public int MaxCps { get; set; }
+            // v2.5 — extra stats for achievements
+            public System.Collections.Generic.List<int> StylesTried { get; set; } = new();
+            public System.Collections.Generic.List<int> ArtTried { get; set; } = new();
+            public long MaxSessionSeconds { get; set; }
+            public bool UsedAtNight { get; set; }
+            public int LaunchCount { get; set; }
         }
 
         private static UsageData _cache = Load();
         private static DateTime _sessionStart = DateTime.Now;
+        private static long _lastSessionClicks;
+        private static readonly DateTime _processStart = DateTime.Now;
         private static readonly object _lock = new();
 
         internal static UsageData Current => _cache;
+
+        // v2.5: called once at startup (achievements: Veteran).
+        internal static void RegisterLaunch()
+        {
+            lock (_lock) { _cache.LaunchCount++; }
+        }
+
+        // v2.5: remember every style/art design the user actually used (achievements:
+        // Collector / Art lover). Cheap — only mutates on first sighting.
+        internal static void NoteStyle(int styleId, int artIndex)
+        {
+            lock (_lock)
+            {
+                if (!_cache.StylesTried.Contains(styleId)) _cache.StylesTried.Add(styleId);
+                if (styleId == ArtStyleId && !_cache.ArtTried.Contains(artIndex)) _cache.ArtTried.Add(artIndex);
+            }
+        }
+        internal static int ArtStyleId = -1; // set by OverlayForm at startup
 
         private static UsageData Load()
         {
@@ -258,7 +284,18 @@ namespace CrosshairOverlay
                 }
                 _sessionStart = now;
                 if (maxCps > _cache.MaxCps) _cache.MaxCps = maxCps;
-                if (totalClicks > _cache.TotalClicks) _cache.TotalClicks = totalClicks;
+
+                // v2.5 fix: `totalClicks` is the per-session counter (reset on every clicker
+                // start), so taking max() meant lifetime clicks never accumulated and the
+                // 100K/1M achievements were unreachable. Accumulate deltas instead.
+                if (totalClicks < _lastSessionClicks) _lastSessionClicks = 0; // counter was reset
+                _cache.TotalClicks += Math.Max(0, totalClicks - _lastSessionClicks);
+                _lastSessionClicks = totalClicks;
+
+                // v2.5 — achievement stats
+                long sessionSec = (long)(now - _processStart).TotalSeconds;
+                if (sessionSec > _cache.MaxSessionSeconds) _cache.MaxSessionSeconds = sessionSec;
+                if (now.Hour < 5) _cache.UsedAtNight = true;
             }
         }
 
@@ -447,6 +484,18 @@ namespace CrosshairOverlay
             {
                 if (!Directory.Exists(path)) Directory.CreateDirectory(path);
                 System.Diagnostics.Process.Start("explorer.exe", $"\"{path}\"");
+            }
+            catch { }
+        }
+
+        // v2.5: web links must go through ShellExecute — passing a URL to
+        // explorer.exe/OpenFolder silently failed (it created a folder named "https:").
+        internal static void OpenUrl(string url)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
             }
             catch { }
         }

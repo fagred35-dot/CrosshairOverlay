@@ -26,6 +26,14 @@ namespace CrosshairOverlay
         private const int CardGap = 10;
         private const int PadX = 20;
         private const int PadTop = 44;   // content starts below the title row
+
+        // v2.5 — window dragging via native caption-move (smooth, no manual tracking)
+        private const int WM_NCLBUTTONDOWN = 0xA1;
+        private static readonly IntPtr HTCAPTION = (IntPtr)0x2;
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         private const int SectionH = 36;
 
         // Hit-test index ranges (so sections can grow without collisions)
@@ -884,6 +892,16 @@ namespace CrosshairOverlay
             if (_hoverIndex == RandomButtonId)
             {
                 ApplyRandom();
+                return;
+            }
+
+            // v2.5: drag the window by its title strip (everything above the cards
+            // that isn't a button). Standard Win32 trick: pretend the click hit the
+            // caption — Windows then runs its native, perfectly smooth move loop.
+            if (e.Y < PadTop)
+            {
+                ReleaseCapture();
+                SendMessage(Handle, WM_NCLBUTTONDOWN, HTCAPTION, IntPtr.Zero);
                 return;
             }
 

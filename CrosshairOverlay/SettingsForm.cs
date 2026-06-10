@@ -10,7 +10,6 @@ namespace CrosshairOverlay
     public class SettingsForm : Form
     {
         private readonly OverlayForm _overlay;
-        private readonly ToolTip _toolTip;
         private readonly System.Windows.Forms.Timer _animTimer;
 
         // Animation
@@ -163,13 +162,19 @@ namespace CrosshairOverlay
                 ControlStyles.ResizeRedraw, true);
             this.UpdateStyles();
 
-            _toolTip = new ToolTip
+            // v2.5: custom owner-drawn tooltip popup. The WinForms ToolTip relied on
+            // OnMouseHover (fires once per enter — wouldn't re-show when moving between
+            // items) and looked foreign on the layered glass panel.
+            _tipTimer = new System.Windows.Forms.Timer { Interval = 350 };
+            _tipTimer.Tick += (_, _) =>
             {
-                InitialDelay = 400,
-                ReshowDelay = 150,
-                AutoPopDelay = 4000,
-                BackColor = Color.FromArgb(18, 10, 35),
-                ForeColor = TextMain
+                _tipTimer.Stop();
+                if (_hoverIndex >= 0 && _hoverIndex < _items.Count &&
+                    !string.IsNullOrEmpty(_items[_hoverIndex].Tooltip))
+                {
+                    _tipIndex = _hoverIndex;
+                    Invalidate();
+                }
             };
 
             _animTimer = new System.Windows.Forms.Timer { Interval = 16 };
@@ -393,8 +398,43 @@ namespace CrosshairOverlay
                 v => { _overlay._clicksPerSecond = v; _overlay.SaveSettings(); },
                 Lang.IsRussian ? "Обычный автокликер (до 60 кпс)" : "Regular autoclicker (up to 60 CPS)");
             AddToggle(Lang.RightClick, _overlay._rightClickMode, v => _overlay._rightClickMode = v, Lang.RightClickTooltip);
+            AddSpacer();
+
+            // v2.5 — humanization pack
+            AddSection(Lang.IsRussian ? "──  ОЧЕЛОВЕЧИВАНИЕ  ──" : "──  HUMANIZATION  ──");
             AddToggle(Lang.RandomDelay, _overlay._randomDelay, v => _overlay._randomDelay = v, Lang.RandomDelayTooltip);
             AddSlider(Lang.SpreadPercent, _overlay._randomDelayPercent, 5, 50, 5, v => _overlay._randomDelayPercent = v, Lang.SpreadPercentTooltip);
+            AddSlider(Lang.IsRussian ? "Удержание кнопки, мс" : "Press duration, ms",
+                _overlay._clickHoldMs, 0, 60, 5,
+                v => _overlay._clickHoldMs = v,
+                Lang.IsRussian
+                    ? "Сколько мс кнопка остаётся нажатой (±30% случайно). 0 = мгновенно. Человек жмёт 40–90 мс; некоторые игры не видят мгновенный клик. Работает при CPS ≤ 40."
+                    : "How long the button stays pressed (±30% random). 0 = instant. Humans press for 40–90 ms; some games miss instant clicks. Active at CPS ≤ 40.");
+            AddToggle(Lang.IsRussian ? "Дрейф скорости" : "CPS drift",
+                _overlay._cpsDrift, v => _overlay._cpsDrift = v,
+                Lang.IsRussian
+                    ? "Скорость плавно «гуляет» волной (период 8–15 с) — человек не кликает с постоянной частотой"
+                    : "Speed slowly wanders in a wave (8–15 s period) — humans never click at a flat rate");
+            AddSlider(Lang.IsRussian ? "Амплитуда дрейфа, %" : "Drift amount, %",
+                _overlay._cpsDriftPercent, 5, 40, 5,
+                v => _overlay._cpsDriftPercent = v,
+                Lang.IsRussian ? "Насколько сильно скорость отклоняется от заданной" : "How far the rate deviates from the set CPS");
+            AddToggle(Lang.IsRussian ? "Микро-паузы" : "Micro-pauses",
+                _overlay._microPauses, v => _overlay._microPauses = v,
+                Lang.IsRussian
+                    ? "Редкие короткие паузы 150–600 мс, как будто перехватываешь мышь"
+                    : "Occasional 150–600 ms pauses, like regripping the mouse");
+            AddSlider(Lang.IsRussian ? "Пауз в минуту" : "Pauses per minute",
+                _overlay._microPausesPerMin, 1, 30, 1,
+                v => _overlay._microPausesPerMin = v,
+                Lang.IsRussian ? "Среднее количество микро-пауз в минуту" : "Average number of micro-pauses per minute");
+            AddToggle(Lang.IsRussian ? "Разгон" : "Warm-up",
+                _overlay._clickerWarmup, v => _overlay._clickerWarmup = v,
+                Lang.IsRussian
+                    ? "Первые 1.5 сек скорость растёт с 40% до 100% — человек не стартует мгновенно"
+                    : "First 1.5 s ramps from 40% to 100% speed — humans don't start at max instantly");
+            AddSpacer();
+
             AddToggle(Lang.IsRussian ? "Без системного писка" : "Mute system beep",
                 _overlay._muteBeepDuringClicks,
                 v => { _overlay._muteBeepDuringClicks = v; _overlay.SaveSettings(); },
@@ -548,9 +588,18 @@ namespace CrosshairOverlay
             AddSpacer();
 
             AddSection(Lang.IsRussian ? "──  ССЫЛКИ  ──" : "──  LINKS  ──");
-            AddButton("GitHub", () => ShellHelper.OpenFolder("https://github.com/fagred35-dot/CrosshairOverlay"), "");
-            AddButton(Lang.IsRussian ? "Достижения" : "Achievements",
-                () => ShowAchievements(), Lang.IsRussian ? "Плашки 1M/10h/..." : "1M/10h/... badges");
+            // v2.5 fix: links went through OpenFolder (explorer.exe) and silently did nothing.
+            const string repoUrl = "https://github.com/fagred35-dot/CrosshairOverlay";
+            AddButton("🌐 GitHub", () => ShellHelper.OpenUrl(repoUrl),
+                Lang.IsRussian ? "Страница проекта" : "Project page");
+            AddButton(Lang.IsRussian ? "📦 Скачать обновления" : "📦 Releases",
+                () => ShellHelper.OpenUrl(repoUrl + "/releases"),
+                Lang.IsRussian ? "Все версии и свежий exe" : "All versions and the latest exe");
+            AddButton(Lang.IsRussian ? "🐞 Сообщить об ошибке" : "🐞 Report a bug",
+                () => ShellHelper.OpenUrl(repoUrl + "/issues/new"),
+                Lang.IsRussian ? "Откроет страницу создания issue" : "Opens the new-issue page");
+            AddButton(Lang.IsRussian ? "🏆 Достижения" : "🏆 Achievements",
+                () => ShowAchievements(), Lang.IsRussian ? "Твой прогресс и награды" : "Your progress and badges");
             AddSpacer();
         }
 
@@ -613,24 +662,57 @@ namespace CrosshairOverlay
                     { Icon = icon, Name = name, Desc = desc, Unlocked = unlocked, Progress = Math.Clamp(progress, 0, 1) });
 
             bool ru = Lang.IsRussian;
+            int styleCount = Enum.GetValues(typeof(OverlayForm.CrosshairStyle)).Length;
+            int favCount = _overlay._galleryFavorites.Count;
+
             A("🎯", ru ? "Первый запуск" : "First launch",
                 ru ? "Открыл программу" : "Opened the app", true, 1.0);
+            A("👆", ru ? "1 000 кликов" : "1K clicks",
+                ru ? "Разминка" : "Warming up", u.TotalClicks >= 1000, u.TotalClicks / 1000.0);
             A("🖱", ru ? "10 000 кликов" : "10K clicks",
                 ru ? "Всего ЛКМ" : "Total LMB", u.TotalClicks >= 10000, u.TotalClicks / 10000.0);
             A("💥", ru ? "100 000 кликов" : "100K clicks",
                 ru ? "Настоящий энтузиаст" : "True enthusiast", u.TotalClicks >= 100000, u.TotalClicks / 100000.0);
             A("🏅", ru ? "1 миллион кликов" : "1M clicks",
                 ru ? "Легенда автокликера" : "Autoclicker legend", u.TotalClicks >= 1000000, u.TotalClicks / 1000000.0);
+            A("🚀", ru ? "10 миллионов кликов" : "10M clicks",
+                ru ? "За гранью разумного" : "Beyond reason", u.TotalClicks >= 10000000, u.TotalClicks / 10000000.0);
             A("⏱", ru ? "1 час использования" : "1 hour active",
                 ru ? "60 минут с прицелом" : "60 min with crosshair", u.SecondsTotal >= 3600, u.SecondsTotal / 3600.0);
             A("🕰", ru ? "10 часов" : "10 hours",
                 ru ? "Время идёт…" : "Time flies…", u.SecondsTotal >= 36000, u.SecondsTotal / 36000.0);
+            A("⌛", ru ? "100 часов" : "100 hours",
+                ru ? "Ветеран оверлея" : "Overlay veteran", u.SecondsTotal >= 360000, u.SecondsTotal / 360000.0);
+            A("🏃", ru ? "Марафон" : "Marathon",
+                ru ? "3 часа за одну сессию" : "3 hours in one session",
+                u.MaxSessionSeconds >= 10800, u.MaxSessionSeconds / 10800.0);
             A("🔥", ru ? "Стрик 7 дней" : "7-day streak",
                 ru ? "Заходил 7 дней подряд" : "Entered 7 days in a row", u.StreakDays >= 7, u.StreakDays / 7.0);
+            A("🌋", ru ? "Стрик 30 дней" : "30-day streak",
+                ru ? "Месяц без пропусков" : "A month without a miss", u.StreakDays >= 30, u.StreakDays / 30.0);
             A("⚡", ru ? "500+ CPS" : "500+ CPS",
                 ru ? "Пиковая скорость" : "Peak speed", u.MaxCps >= 500, u.MaxCps / 500.0);
+            A("🌩", ru ? "1000+ CPS" : "1000+ CPS",
+                ru ? "Скорость света" : "Speed of light", u.MaxCps >= 1000, u.MaxCps / 1000.0);
             A("🎨", ru ? "Коллекционер" : "Collector",
-                ru ? "Опробуй все стили прицела" : "Try all crosshair styles", false, 0.0);
+                ru ? $"Опробуй все стили прицела ({u.StylesTried.Count}/{styleCount})"
+                   : $"Try all crosshair styles ({u.StylesTried.Count}/{styleCount})",
+                u.StylesTried.Count >= styleCount, (double)u.StylesTried.Count / styleCount);
+            A("🖌", ru ? "Ценитель искусства" : "Art connoisseur",
+                ru ? $"Опробуй 10 авторских прицелов ({u.ArtTried.Count}/10)"
+                   : $"Try 10 artist crosshairs ({u.ArtTried.Count}/10)",
+                u.ArtTried.Count >= 10, u.ArtTried.Count / 10.0);
+            A("⭐", ru ? "Куратор" : "Curator",
+                ru ? $"Добавь 5 прицелов в избранное ({favCount}/5)"
+                   : $"Favorite 5 crosshairs ({favCount}/5)",
+                favCount >= 5, favCount / 5.0);
+            A("🦉", ru ? "Сова" : "Night owl",
+                ru ? "Использовал прицел после полуночи" : "Used the crosshair past midnight",
+                u.UsedAtNight, u.UsedAtNight ? 1.0 : 0.0);
+            A("🎖", ru ? "Завсегдатай" : "Regular",
+                ru ? $"Запусти программу 50 раз ({u.LaunchCount}/50)"
+                   : $"Launch the app 50 times ({u.LaunchCount}/50)",
+                u.LaunchCount >= 50, u.LaunchCount / 50.0);
 
             bool prevTop = this.TopMost;
             this.TopMost = false;
@@ -933,6 +1015,7 @@ namespace CrosshairOverlay
             g.ResetTransform();
             g.ResetClip();
 
+            DrawTipPopup(g, clientRect);   // v2.5 hover hints
             DrawScrollbar(g, clientRect);
         }
 
@@ -1455,12 +1538,17 @@ namespace CrosshairOverlay
             int oldHover = _hoverIndex;
             _hoverIndex = HitTest(e.Location);
             if (oldHover != _hoverIndex)
+            {
+                HideTip();
+                if (_hoverIndex >= 0) { _tipTimer.Stop(); _tipTimer.Start(); }
                 Invalidate();
+            }
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            HideTip();
 
             // Right-click on a slider = reset to default/mid (#77)
             if (e.Button == MouseButtons.Right)
@@ -1656,6 +1744,7 @@ namespace CrosshairOverlay
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
+            HideTip();
 
             // Wheel scrolls the list. Sliders are changed only by click/drag
             // (avoids accidental edits when scrolling over a control).
@@ -1724,6 +1813,7 @@ namespace CrosshairOverlay
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
+            HideTip();
             if (_hoverIndex >= 0)
             {
                 _hoverIndex = -1;
@@ -1883,21 +1973,48 @@ namespace CrosshairOverlay
 
         #region Tooltip
 
-        private int _lastTooltipIndex = -1;
+        private int _tipIndex = -1;
+        private readonly System.Windows.Forms.Timer _tipTimer;
 
-        protected override void OnMouseHover(EventArgs e)
+        private void HideTip()
         {
-            base.OnMouseHover(e);
-            if (_hoverIndex >= 0 && _hoverIndex < _items.Count && _hoverIndex != _lastTooltipIndex)
-            {
-                _lastTooltipIndex = _hoverIndex;
-                var item = _items[_hoverIndex];
-                if (!string.IsNullOrEmpty(item.Tooltip))
-                {
-                    var pos = PointToClient(Cursor.Position);
-                    _toolTip.Show(item.Tooltip, this, pos.X + 10, pos.Y + 20, 3000);
-                }
-            }
+            if (_tipIndex >= 0) { _tipIndex = -1; Invalidate(); }
+            _tipTimer.Stop();
+        }
+
+        /// <summary>v2.5: tooltip drawn inside the panel itself — matches the glass theme,
+        /// reliably re-shows when moving between items, never steals focus.</summary>
+        private void DrawTipPopup(Graphics g, Rectangle clientRect)
+        {
+            if (_tipIndex < 0 || _tipIndex >= _items.Count) return;
+            var item = _items[_tipIndex];
+            if (string.IsNullOrEmpty(item.Tooltip)) { _tipIndex = -1; return; }
+
+            int maxW = PanelWidth - ItemPadX * 2 - 16;
+            var size = g.MeasureString(item.Tooltip, _fontSmall, maxW);
+            int boxW = (int)size.Width + 18;
+            int boxH = (int)size.Height + 12;
+
+            // Below the hovered item; flip above if it would leave the panel.
+            int itemScreenY = item.Y - _scrollY;
+            int boxX = ItemPadX + 4;
+            int boxY = itemScreenY + item.Height + 2;
+            if (boxY + boxH > clientRect.Height - 6)
+                boxY = itemScreenY - boxH - 2;
+            boxY = Math.Max(HeaderHeight + 6, boxY);
+
+            var rect = new Rectangle(boxX, boxY, boxW, boxH);
+            using var path = RoundRect(rect, 8);
+            using (var shadow = new SolidBrush(Color.FromArgb(90, 0, 0, 0)))
+            using (var shadowPath = RoundRect(new Rectangle(rect.X + 2, rect.Y + 3, rect.Width, rect.Height), 8))
+                g.FillPath(shadow, shadowPath);
+            using (var bg = new SolidBrush(Color.FromArgb(248, 26, 16, 46)))
+                g.FillPath(bg, path);
+            using (var border = new Pen(Color.FromArgb(160, AccentGlow), 1f))
+                g.DrawPath(border, path);
+            using (var txt = new SolidBrush(TextMain))
+                g.DrawString(item.Tooltip, _fontSmall, txt,
+                    new RectangleF(rect.X + 9, rect.Y + 6, maxW, rect.Height - 8));
         }
 
         #endregion
@@ -1917,7 +2034,7 @@ namespace CrosshairOverlay
         {
             _animTimer.Stop();
             _animTimer.Dispose();
-            _toolTip.Dispose();
+            _tipTimer.Dispose();
             _bgCache?.Dispose();
             _fontTitle.Dispose();
             _fontSection.Dispose();
