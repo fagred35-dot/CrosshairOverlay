@@ -11,3 +11,8 @@ publish*/
 backup/
 *.md
 !README.md
+__pycache__/
+*.py[cod]
+.venv/
+.env
+bot/gray.sqlite3
